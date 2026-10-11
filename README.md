@@ -29,12 +29,16 @@ var client = new WhitewaterClient(
     apiKey: "...",
     endpoints: new[] { new Uri("https://node1:7070"), new Uri("https://node2:7070") });
 
-// Provision a Domain, Feed, Writer, and session through WCL.
-var setup = await client.Admin.WclAsync(
-    "CREATE DOMAIN shop; CREATE FEED shop.orders; " +
-    "CREATE WRITER orders-writer TO shop.orders; " +
-    "OPEN WRITER SESSION orders-writer;");
-var sessionEpoch = setup.Results[3].Data["session_epoch"]!.GetValue<long>();
+// Provision a Domain, Feed, Writer, and session — either typed
+// (each method builds its WCL statement for you):
+await client.CreateDomainAsync("shop");
+await client.CreateFeedAsync("shop.orders");
+await client.CreateWriterAsync("orders-writer", "shop.orders");
+var setup = await client.OpenWriterSessionAsync("orders-writer");
+var sessionEpoch = setup.Results[0].Data["session_epoch"]!.GetValue<long>();
+//
+// …or raw WCL when a script is clearer:
+//   await client.WclAsync("CREATE DOMAIN shop; CREATE FEED shop.orders; ...");
 
 // Idempotent append — retrying with the same request id is safe.
 var writer = client.Writer("orders-writer", sessionEpoch);

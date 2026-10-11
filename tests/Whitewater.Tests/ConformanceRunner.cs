@@ -188,7 +188,7 @@ public class ConformanceRunner
         switch (step["op"]!.GetValue<string>())
         {
             case "wcl":
-                return ResultNode(await client.Admin.WclAsync(
+                return ResultNode(await client.WclAsync(
                     args["script"]!.GetValue<string>()));
             case "admin.commands":
             {
@@ -197,7 +197,7 @@ public class ConformanceRunner
                 {
                     commands.Add(command!.AsObject());
                 }
-                return ResultNode(await client.Admin.CommandsAsync(commands));
+                return ResultNode(await client.CommandsAsync(commands));
             }
             case "feed.append":
             {
