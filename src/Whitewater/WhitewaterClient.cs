@@ -277,4 +277,25 @@ public sealed class WhitewaterClient
 
     public SubscriptionMemberClient SubscriptionMember(string subscription)
         => new(_transport, subscription);
+
+    /// <summary>
+    /// Subscribe durably to a Feed: ensures a Reader named
+    /// <paramref name="reader"/> exists (creating it at
+    /// <paramref name="start"/> when missing), opens a session, and invokes
+    /// <paramref name="onRecords"/> per fetched page on a background task,
+    /// acknowledging after each batch.
+    ///
+    /// The returned <see cref="Subscription"/> runs until
+    /// <see cref="Subscription.DisposeAsync"/>; terminal errors reach
+    /// <paramref name="onError"/> and <see cref="Subscription.Failure"/>.
+    /// </summary>
+    public Subscription Subscribe(
+        string reader,
+        string feed,
+        ReaderStart start,
+        Func<IReadOnlyList<FeedRecord>, Task> onRecords,
+        Action<WhitewaterException>? onError = null)
+        => new(this, reader, feed, start, SubscribeCapacity, onRecords, onError);
+
+    private const int SubscribeCapacity = 128;
 }

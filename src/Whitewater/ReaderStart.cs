@@ -6,21 +6,42 @@ namespace Whitewater;
 /// </summary>
 public sealed class ReaderStart
 {
-    private ReaderStart(string wcl) => Wcl = wcl;
+    public enum StartKind { Beginning, Now, Cursor, Timestamp }
+
+    private ReaderStart(StartKind kind, string? cursor, long timestampNs)
+    {
+        Kind = kind;
+        CursorValue = cursor;
+        TimestampNsValue = timestampNs;
+    }
 
     /// <summary>From the oldest retained record.</summary>
-    public static ReaderStart Beginning() => new("BEGINNING");
+    public static ReaderStart Beginning() => new(StartKind.Beginning, null, 0);
 
     /// <summary>From records appended after creation.</summary>
-    public static ReaderStart Now() => new("NOW");
+    public static ReaderStart Now() => new(StartKind.Now, null, 0);
 
     /// <summary>From an opaque Cursor previously returned by the Riverbed.</summary>
     public static ReaderStart Cursor(string cursor)
-        => new("CURSOR '" + cursor.Replace("'", "''") + "'");
+        => new(StartKind.Cursor, cursor, 0);
 
     /// <summary>From a signed Unix epoch nanosecond timestamp.</summary>
-    public static ReaderStart TimestampNs(long nanos) => new($"TIMESTAMP {nanos}");
+    public static ReaderStart TimestampNs(long nanos) => new(StartKind.Timestamp, null, nanos);
+
+    public StartKind Kind { get; }
+
+    /// <summary>Set when <see cref="Kind"/> is <c>Cursor</c>.</summary>
+    public string? CursorValue { get; }
+
+    /// <summary>Set when <see cref="Kind"/> is <c>Timestamp</c>.</summary>
+    public long TimestampNsValue { get; }
 
     /// <summary>The WCL <c>START AT</c> operand, e.g. <c>BEGINNING</c>.</summary>
-    public string Wcl { get; }
+    public string Wcl => Kind switch
+    {
+        StartKind.Now => "NOW",
+        StartKind.Cursor => "CURSOR '" + (CursorValue ?? "").Replace("'", "''") + "'",
+        StartKind.Timestamp => $"TIMESTAMP {TimestampNsValue}",
+        _ => "BEGINNING",
+    };
 }

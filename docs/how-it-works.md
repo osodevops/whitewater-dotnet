@@ -76,6 +76,19 @@ Three shapes, in increasing durability:
    `OpenAsync` → `FetchAsync` → `AckAsync(deliveredCursor)` →
    `CloseAsync`. Progress survives restarts.
 
+Two managed wrappers sit on top of those primitives:
+
+- **`Feeds.LoadAsync(feed, start, sink)`** — one-shot bulk read: pages
+  `TemporaryFetchAsync` from `ReaderStart` until the frontier is
+  drained. `sink` is a `RecordStore` (a named keyed in-memory map) or
+  any `Func<IReadOnlyList<FeedRecord>, Task>`.
+- **`Subscribe(reader, feed, start, onRecords[, onError])`** — a durable
+  consume loop on a background task: provisions the Reader when missing,
+  then `OpenAsync` → [`FetchAsync` → `onRecords` → `AckAsync`] →
+  `CloseAsync`. Transient errors retry; `StaleSession` and hard refusals
+  terminate via `onError`/`sub.Failure`. `await sub.DisposeAsync()`
+  stops it.
+
 `SubscriptionMember(sub)` is the lease vocabulary for cooperating
 consumers: `JoinAsync` → `ClaimAsync`/`RenewAsync`/`ReleaseAsync` →
 `FetchAsync` → `AckAsync`.

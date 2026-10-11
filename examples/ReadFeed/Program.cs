@@ -5,7 +5,11 @@ using Whitewater;
 // Riverbed, so progress survives client restarts — the "subscribe"
 // pattern for applications, versus the ephemeral tail in TailFeed.
 //
-// The loop is explicit — Whitewater Readers pull rather than push:
+// For a managed loop — auto-provisioning, retry policy, and an
+// IAsyncDisposable handle — use client.Subscribe(...) instead of this
+// explicit form.
+//
+// The loop below is explicit — Whitewater Readers pull rather than push:
 //
 //   Open -> [ Fetch -> process -> Ack ] -> Close
 //

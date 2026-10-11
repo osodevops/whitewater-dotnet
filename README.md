@@ -63,6 +63,22 @@ if (page.DeliveredCursor is { } frontier)
 }
 ```
 
+### Managed consume: `LoadAsync` + `Subscribe`
+
+```csharp
+var store = RecordStore.Named("employee-store");
+
+// One-shot bulk read of committed history into the store.
+await client.Feeds.LoadAsync("hr.employees", ReaderStart.Beginning(), store);
+
+// ...then keep it warm: provisions the Reader, runs
+// Open -> [Fetch -> onRecords -> Ack] -> Close on a background task.
+await using var sub = client.Subscribe("hr-view", "hr.employees",
+    ReaderStart.Now(),
+    batch => { store.PutAll(batch); return Task.CompletedTask; },
+    error => Console.Error.WriteLine($"subscription ended: {error}"));
+```
+
 ### Error handling
 
 ```csharp

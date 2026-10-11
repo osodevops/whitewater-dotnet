@@ -78,4 +78,62 @@ public sealed class FeedClient
             .PostAsync("/v1/feeds/append", Wire.FeedAppendRequest(feed, record), ct)
             .ConfigureAwait(false));
     }
+
+    /// <summary>
+    /// Bulk-read committed Feed history once, from <paramref name="start"/>,
+    /// delivering each page to <paramref name="sink"/> until the current
+    /// frontier is drained. Returns the number of records delivered. Use
+    /// <see cref="WhitewaterClient.Subscribe"/> when the sink should keep
+    /// receiving.
+    ///
+    /// <see cref="ReaderStart.Now"/> loads nothing (the frontier is empty at
+    /// call time); <c>Cursor</c>/<c>TimestampNs</c> resume from that point.
+    /// </summary>
+    public async Task<long> LoadAsync(
+        string feed,
+        ReaderStart start,
+        Func<IReadOnlyList<FeedRecord>, Task> sink,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(start);
+        ArgumentNullException.ThrowIfNull(sink);
+        var options = FirstPage(start);
+        long loaded = 0;
+        while (true)
+        {
+            var page = await TemporaryFetchAsync(feed, options, ct).ConfigureAwait(false);
+            if (page.Records.Count == 0)
+            {
+                return loaded;
+            }
+            await sink(page.Records).ConfigureAwait(false);
+            loaded += page.Records.Count;
+            options = TemporaryFetchOptions.Page(page.NextCursor, LoadPage);
+        }
+    }
+
+    /// <summary><see cref="LoadAsync"/> that materializes into a <see cref="RecordStore"/>.</summary>
+    public Task<long> LoadAsync(
+        string feed, ReaderStart start, RecordStore store, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        return LoadAsync(feed, start,
+            records =>
+            {
+                store.PutAll(records);
+                return Task.CompletedTask;
+            }, ct);
+    }
+
+    private const int LoadPage = 512;
+
+    private static TemporaryFetchOptions FirstPage(ReaderStart start) => start.Kind switch
+    {
+        ReaderStart.StartKind.Now => TemporaryFetchOptions.AtEnd(),
+        ReaderStart.StartKind.Cursor =>
+            TemporaryFetchOptions.Page(new Cursor(start.CursorValue!), LoadPage),
+        ReaderStart.StartKind.Timestamp =>
+            new TemporaryFetchOptions(Limit: LoadPage, AfterEventTimeNs: start.TimestampNsValue),
+        _ => TemporaryFetchOptions.Page(null, LoadPage),
+    };
 }
