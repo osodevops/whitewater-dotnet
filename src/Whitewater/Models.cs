@@ -90,3 +90,50 @@ public sealed record MemberPage(
     Cursor? Cursor,
     IReadOnlyDictionary<string, string> Positions,
     long OwnershipEpoch);
+
+/// <summary>
+/// One ad-hoc append for <c>POST /v1/feeds/append</c>: the caller
+/// supplies the writer identity directly instead of holding a named
+/// Writer session. Identical <paramref name="RequestId"/> retries dedupe
+/// server-side.
+/// </summary>
+public sealed record FeedAppend(
+    Guid RequestId,
+    Guid WriterSessionId,
+    long WriterEpoch,
+    long Sequence,
+    byte[]? Key,
+    byte[] Payload,
+    long? EventTimeNs = null,
+    IReadOnlyDictionary<string, byte[]>? Metadata = null);
+
+/// <summary>
+/// Options for an anonymous temporary Reader fetch. <paramref name="After"/>
+/// continues after an opaque Cursor; <paramref name="AfterEventTimeNs"/>
+/// seeks by record event time; <paramref name="NewOnly"/> positions at the
+/// current end without returning history; <paramref name="Tail"/> plus
+/// <paramref name="WaitMs"/> long-polls for newly committed records.
+/// </summary>
+public sealed record TemporaryFetchOptions(
+    Cursor? After = null,
+    int? Limit = null,
+    bool NewOnly = false,
+    bool Tail = false,
+    int? WaitMs = null,
+    long? AfterEventTimeNs = null)
+{
+    /// <summary>Read a bounded page after <paramref name="after"/>.</summary>
+    public static TemporaryFetchOptions Page(Cursor? after, int limit)
+        => new(After: after, Limit: limit);
+
+    /// <summary>Long-poll for newly committed records after <paramref name="after"/>.</summary>
+    public static TemporaryFetchOptions Tailed(Cursor? after, int limit, int waitMs)
+        => new(After: after, Limit: limit, Tail: true, WaitMs: waitMs);
+
+    /// <summary>Position at the current end Cursor without returning records.</summary>
+    public static TemporaryFetchOptions AtEnd() => new(NewOnly: true);
+}
+
+public sealed record TemporaryFetchPage(
+    IReadOnlyList<FeedRecord> Records,
+    Cursor? NextCursor);

@@ -43,6 +43,42 @@ internal static class Wire
         return body;
     }
 
+    public static JsonObject FeedAppendRequest(string feed, FeedAppend record)
+    {
+        var metadata = new JsonObject();
+        if (record.Metadata != null)
+        {
+            foreach (var (name, value) in record.Metadata)
+            {
+                metadata[name] = Convert.ToBase64String(value);
+            }
+        }
+        var body = new JsonObject
+        {
+            ["request_id"] = record.RequestId.ToString(),
+            ["feed"] = feed,
+            ["writer_session_id"] = record.WriterSessionId.ToString(),
+            ["writer_epoch"] = record.WriterEpoch,
+            ["sequence"] = record.Sequence,
+            ["key_base64"] = Convert.ToBase64String(record.Key ?? Array.Empty<byte>()),
+            ["payload_base64"] = Convert.ToBase64String(record.Payload),
+            ["metadata_base64"] = metadata,
+        };
+        if (record.EventTimeNs.HasValue)
+        {
+            body["event_time_ns"] = record.EventTimeNs.Value
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return body;
+    }
+
+    public static TemporaryFetchPage TemporaryFetchPage(JsonNode? node)
+    {
+        return new TemporaryFetchPage(
+            Records(node?["records"]),
+            Cursor.Of(node?["next_cursor"]?.GetValue<string>()));
+    }
+
     public static ServerFeedback Feedback(JsonNode? node)
     {
         return new ServerFeedback(

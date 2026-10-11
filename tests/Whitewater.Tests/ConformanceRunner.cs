@@ -31,12 +31,14 @@ public class ConformanceRunner
             return;
         }
         var endpoints = BaseUrls.Split(',').Select(raw => new Uri(raw.Trim())).ToArray();
-        var client = new WhitewaterClient(ApiKey, endpoints, TimeSpan.FromSeconds(30));
         var files = Directory.GetFiles(FixtureDir, "*.json").OrderBy(f => f).ToArray();
         Assert.NotEmpty(files);
         foreach (var file in files)
         {
-            await RunScenario(client, JsonNode.Parse(await File.ReadAllTextAsync(file))!);
+            var scenario = JsonNode.Parse(await File.ReadAllTextAsync(file))!;
+            var apiKey = scenario["api_key"]?.GetValue<string>() ?? ApiKey;
+            var client = new WhitewaterClient(apiKey, endpoints, TimeSpan.FromSeconds(30));
+            await RunScenario(client, scenario);
         }
     }
 
@@ -54,24 +56,32 @@ public class ConformanceRunner
             index += 1;
             var expect = step["expect"] as JsonObject;
             var errorCode = expect?["error_code"]?.GetValue<string>();
+            var errorStatus = expect?["error_status"]?.GetValue<int>();
+            var expectsError = errorCode != null || errorStatus != null;
             JsonNode? result;
             try
             {
                 result = await Call(client, Substitute(step, context));
-                if (errorCode != null)
+                if (expectsError)
                 {
                     throw new InvalidOperationException(
                         $"{name}: step {index} ({op}) succeeded but expected " +
-                        $"error_code {errorCode}");
+                        $"error {expect?.ToJsonString()}");
                 }
             }
-            catch (WhitewaterException error) when (errorCode != null)
+            catch (WhitewaterException error) when (expectsError)
             {
-                if (error.Code != errorCode)
+                if (errorCode != null && error.Code != errorCode)
                 {
                     throw new InvalidOperationException(
                         $"{name}: step {index} ({op}) failed with " +
                         $"{error.Code ?? error.GetType().Name}, expected error_code {errorCode}");
+                }
+                if (errorStatus != null && error.Status != errorStatus.Value)
+                {
+                    throw new InvalidOperationException(
+                        $"{name}: step {index} ({op}) failed with HTTP " +
+                        $"{error.Status}, expected error_status {errorStatus}");
                 }
                 result = new JsonObject { ["error_code"] = error.Code };
             }
@@ -90,7 +100,7 @@ public class ConformanceRunner
             }
             foreach (var entry in expect)
             {
-                if (entry.Key == "error_code")
+                if (entry.Key == "error_code" || entry.Key == "error_status")
                 {
                     continue;
                 }
@@ -180,6 +190,42 @@ public class ConformanceRunner
             case "wcl":
                 return ResultNode(await client.Admin.WclAsync(
                     args["script"]!.GetValue<string>()));
+            case "admin.commands":
+            {
+                var commands = new List<JsonObject>();
+                foreach (var command in args["commands"]!.AsArray())
+                {
+                    commands.Add(command!.AsObject());
+                }
+                return ResultNode(await client.Admin.CommandsAsync(commands));
+            }
+            case "feed.append":
+            {
+                var record = new FeedAppend(
+                    Guid.Parse(args["request_id"]!.GetValue<string>()),
+                    Guid.Parse(args["writer_session_id"]!.GetValue<string>()),
+                    args["writer_epoch"]!.GetValue<long>(),
+                    args["sequence"]!.GetValue<long>(),
+                    DecodeBytes(args["key"]),
+                    DecodeBytes(args["payload"])!,
+                    args["event_time_ns"] is { } ns ? long.Parse(ns.GetValue<string>()) : null,
+                    DecodeMetadata(args["metadata"] as JsonObject));
+                return ResultNode(await client.Feeds.AppendAsync(
+                    args["feed"]!.GetValue<string>(), record));
+            }
+            case "reader.temporary_fetch":
+            {
+                var options = new TemporaryFetchOptions(
+                    After: args["after"] is { } a ? new Cursor(a.GetValue<string>()) : null,
+                    Limit: LimitArg(args),
+                    NewOnly: args["new_only"]?.GetValue<bool>() ?? false,
+                    Tail: args["tail"]?.GetValue<bool>() ?? false,
+                    WaitMs: args["wait_ms"]?.GetValue<int>(),
+                    AfterEventTimeNs: args["after_event_time_ns"] is { } t
+                        ? long.Parse(t.GetValue<string>()) : null);
+                return ResultNode(await client.Feeds.TemporaryFetchAsync(
+                    args["feed"]!.GetValue<string>(), options));
+            }
             case "writer.append":
             {
                 var writer = SessionWriter(client, args);
