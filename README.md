@@ -89,7 +89,8 @@ await using var sub = client.Subscribe("hr-view", "hr.employees",
 ```
 
 `client.Feeds.LoadAsync` remains the lighter one-shot read when you
-don't need named-key projections.
+don't need named-key projections. See [docs/stores.md](docs/stores.md)
+for the full store guide.
 
 ### Error handling
 
