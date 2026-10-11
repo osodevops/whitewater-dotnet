@@ -66,10 +66,19 @@ if (page.DeliveredCursor is { } frontier)
 ### Managed consume: `LoadAsync` + `Subscribe`
 
 ```csharp
-var store = RecordStore.Named("employee-store");
+var store = RecordStore.Named("employee-store")
+    .AddKey("passport").AddKey("department");              // up to 10 named keys
 
-// One-shot bulk read of committed history into the store.
-await client.Feeds.LoadAsync("hr.employees", ReaderStart.Beginning(), store);
+// One-shot bulk read of committed history, projected per row.
+await client.LoadStore(store).FromFeedAsync("hr.employees",
+    ReaderStart.Beginning(),
+    (s, record) => s.Upsert(record)
+        .WithKey(record.Key)
+        .WithNamedKey("passport", record.Metadata["pp"]));
+
+var rec = store.Get("emp-1");                    // by primary key
+var rows = store.Get("passport", "P123");        // by named key — non-unique, returns a list
+store.ForEachParallel(3, entry => Export(entry.Record));
 
 // ...then keep it warm: provisions the Reader, runs
 // Open -> [Fetch -> onRecords -> Ack] -> Close on a background task.
@@ -78,6 +87,9 @@ await using var sub = client.Subscribe("hr-view", "hr.employees",
     batch => { store.PutAll(batch); return Task.CompletedTask; },
     error => Console.Error.WriteLine($"subscription ended: {error}"));
 ```
+
+`client.Feeds.LoadAsync` remains the lighter one-shot read when you
+don't need named-key projections.
 
 ### Error handling
 

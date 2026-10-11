@@ -297,5 +297,58 @@ public sealed class WhitewaterClient
         Action<WhitewaterException>? onError = null)
         => new(this, reader, feed, start, SubscribeCapacity, onRecords, onError);
 
+    /// <summary>
+    /// Bulk materialization of Feed history into a <see cref="RecordStore"/>:
+    /// the <c>FromFeedAsync</c> projection callback picks each row's primary
+    /// key and named-key values via <c>store.Upsert(record)</c>:
+    ///
+    /// <code>
+    /// var store = RecordStore.Named("employee-store").AddKey("passport");
+    /// var loaded = await client.LoadStore(store).FromFeedAsync("hr.employees",
+    ///     ReaderStart.Beginning(),
+    ///     (s, record) => s.Upsert(record)
+    ///         .WithKey(record.Key)
+    ///         .WithNamedKey("passport", record.Metadata["pp"]));
+    /// </code>
+    /// </summary>
+    public LoadStore LoadStore(RecordStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        return new LoadStore(this, store);
+    }
+
     private const int SubscribeCapacity = 128;
+}
+
+/// <summary>The <see cref="WhitewaterClient.LoadStore"/> operation builder.</summary>
+public sealed class LoadStore
+{
+    private readonly WhitewaterClient _client;
+    private readonly RecordStore _store;
+
+    internal LoadStore(WhitewaterClient client, RecordStore store)
+    {
+        _client = client;
+        _store = store;
+    }
+
+    /// <summary>
+    /// Read committed history of <paramref name="feed"/> from
+    /// <paramref name="start"/>, invoking <paramref name="projection"/> per
+    /// record until the frontier is drained; returns the number of records
+    /// loaded.
+    /// </summary>
+    public Task<long> FromFeedAsync(
+        string feed,
+        ReaderStart start,
+        Action<RecordStore, FeedRecord> projection,
+        CancellationToken cancellationToken = default)
+        => _client.Feeds.LoadAsync(feed, start, records =>
+        {
+            foreach (var record in records)
+            {
+                projection(_store, record);
+            }
+            return Task.CompletedTask;
+        }, cancellationToken);
 }
