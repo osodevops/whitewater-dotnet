@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Whitewater</RootNamespace>
+    <PackageId>Whitewater.Client</PackageId>
+    <Version>0.1.0</Version>
+    <Description>
+      Whitewater SDK for .NET: Admin (WCL), Writer, Reader, and
+      Subscription member clients over the whitewater-protocol wire
+      contract. No external dependencies.
+    </Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Whitewater.Tests" />
+  </ItemGroup>
+
+</Project>
