@@ -149,8 +149,65 @@ public static class StateStoreLimits
 /// value to every primary row carrying it (the group/list lookup);
 /// <paramref name="Unique"/> enforces one row per value, arbitrated
 /// first-committed-wins by the store's journal order.
+///
+/// <paramref name="Extractor"/> is feed-sourced stores only: the
+/// projection server-side replay applies to each committed source
+/// record. Manual stores take values on each Put instead.
 /// </summary>
-public sealed record NamedKey(string Name, bool Unique);
+public sealed record NamedKey(string Name, bool Unique, Extractor? Extractor = null);
+
+/// <summary>
+/// How a feed-sourced StateStore projects one committed source record
+/// to a named key's typed lookup values — declared on
+/// <c>AddKey(..., extractor)</c> and applied by server-side replay.
+/// Build with <see cref="RecordKey"/>, <see cref="Metadata(string)"/>,
+/// or <see cref="Json(string)"/>.
+/// </summary>
+public sealed record Extractor
+{
+    private Extractor(string kind, string? name, string? extractor, int? version, string? field)
+    {
+        Kind = kind;
+        Name = name;
+        ExtractorName = extractor;
+        Version = version;
+        Field = field;
+    }
+
+    internal string Kind { get; }
+    internal string? Name { get; }
+    internal string? ExtractorName { get; }
+    internal int? Version { get; }
+    internal string? Field { get; }
+
+    /// <summary>The source record's application Key.</summary>
+    public static Extractor RecordKey() => new("key", null, null, null, null);
+
+    /// <summary>A named record Metadata entry.</summary>
+    public static Extractor Metadata(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return new("metadata", name, null, null, null);
+    }
+
+    /// <summary>A dotted JSON-path projection over the record payload.</summary>
+    public static Extractor Json(string field)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(field);
+        return new("projection", null, "json", 1, field);
+    }
+
+    /// <summary>Serialize to the wire IndexFieldSpec object.</summary>
+    internal JsonObject ToWire()
+    {
+        var node = new JsonObject { ["kind"] = Kind };
+        if (Name != null) node["name"] = Name;
+        if (ExtractorName != null) node["extractor"] = ExtractorName;
+        if (Version != null) node["version"] = Version;
+        if (Field != null) node["field"] = Field;
+        return node;
+    }
+}
 
 /// <summary>
 /// Freshness evidence every StateStore read reports: the serving

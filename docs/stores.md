@@ -96,18 +96,39 @@ await store.DropAsync();                        // or client.StateStores.DropAsy
   and every data path refuses. Rows already applied on replicas remain
   until a bounded reclaim pass.
 - Feed-sourced stores: `client.StateStores.DefineAsync(spec, "accounts.events")`
-  materializes committed Feed history; named keys require a manual
-  store until declared projections exist.
+  materializes committed Feed history.
+
+### Feed-sourced named keys
+
+Named keys on a feed-sourced store declare a projection — how each
+committed source record maps to typed lookup values. Every key carries
+an `Extractor`:
+
+```csharp
+var spec = StateStore.Named("accounts.tagged")
+    .AddKey("passport", unique: true, extractor: Extractor.Metadata("pp"))
+    .AddKey("department", extractor: Extractor.Json("dept"));
+var store = await client.StateStores.DefineAsync(spec, "accounts.events");
+```
+
+`Extractor.RecordKey()` reads the record's key,
+`Extractor.Metadata("pp")` a Metadata entry, `Extractor.Json("dept")` a
+dotted JSON-path over the payload. Missing fields and unparseable
+payloads project a `Null` posting rather than stalling replay. Manual
+stores omit the extractor — `Put` carries the values per row.
 
 ### WCL and typed commands
 
 Everything above is a convenience over the Control Plane's two doors.
-WCL spells `DROP` for stores (there is no `DEFINE`/`MUTATE` spelling —
-declaration and data ops stay typed):
+WCL spells `DEFINE`, `DROP`, `DESCRIBE`, and `SHOW` for stores (data ops
+stay typed):
 
 ```csharp
-await client.WclAsync("DROP STATESTORE accounts.employees");
+await client.WclAsync("DEFINE STATESTORE accounts.employees KEYS department, passport UNIQUE");
+await client.WclAsync("DEFINE STATESTORE accounts.tagged FROM FEED accounts.events KEYS passport = METADATA 'pp' UNIQUE, department = JSON 'dept'");
+await client.WclAsync("SHOW STATESTORES");
 await client.WclAsync("DESCRIBE STATESTORE accounts.employees"); // stage incl. "dropped"
+await client.WclAsync("DROP STATESTORE accounts.employees");
 ```
 
 `CommandsAsync` posts the typed command the facade builds for you:
@@ -138,7 +159,8 @@ await client.CommandsAsync(new[]
 | Where | Type | Meaning / remedy |
 |---|---|---|
 | `AddKey` #11 / duplicate / blank | `InvalidOperationException` / `ArgumentException` | Declaration contract (10-key bound, distinct names). |
-| `DefineAsync` spec + `source` + named keys | `ArgumentException` | Named keys need a manual store — checked before the call. |
+| `DefineAsync` spec + `source` + bare named keys | `ArgumentException` | Feed-sourced keys need an `Extractor` — checked before the call. |
+| `DefineAsync` manual spec + `Extractor` | `ArgumentException` | Extractors apply to feed-sourced stores only. |
 | Data op on unbound spec | `InvalidOperationException` | `StateStore.Named` builds a spec; bind via `DefineAsync` or `client.StateStore(name)`. |
 | `float`/`double`/`decimal` named value | `ArgumentException` | The wire carries exact i64 — pass an integral type. |
 | Undeclared named key / missing store | `WhitewaterException` 400 | Server-side contract — fix the declaration. |

@@ -159,11 +159,41 @@ public class StateStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task DefineRefusesNamedKeysOnAFeedSourcedStore()
+    public async Task DefineFeedSourcedNamedKeysNeedExtractors()
     {
-        var spec = StateStore.Named("accounts.src").AddKey("k");
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => _client.StateStores.DefineAsync(spec, "accounts.events"));
+        // A feed-sourced named key without a projection is a declaration bug.
+        var bare = StateStore.Named("accounts.src").AddKey("k");
+        var refused = await Assert.ThrowsAsync<ArgumentException>(
+            () => _client.StateStores.DefineAsync(bare, "accounts.events"));
+        Assert.Contains("require an extractor", refused.Message);
+
+        // An extractor on a manual store is refused — Puts carry the values.
+        var manual = StateStore.Named("accounts.m")
+            .AddKey("k", extractor: Extractor.Metadata("pp"));
+        var refusedManual = await Assert.ThrowsAsync<ArgumentException>(
+            () => _client.StateStores.DefineAsync(manual));
+        Assert.Contains("manual stores", refusedManual.Message);
+    }
+
+    [Fact]
+    public async Task DefineFeedSourcedEmitsExtractors()
+    {
+        var spec = StateStore.Named("accounts.tagged")
+            .AddKey("passport", unique: true, extractor: Extractor.Metadata("pp"))
+            .AddKey("department", extractor: Extractor.Json("dept"));
+        await _client.StateStores.DefineAsync(spec, "accounts.events");
+
+        var sent = LastBody("/v1/admin/commands")["commands"]![0]!;
+        Assert.Equal("feed", sent["source"]!["kind"]!.GetValue<string>());
+        Assert.Equal("accounts.events", sent["source"]!["feed"]!.GetValue<string>());
+        var passport = sent["named_keys"]![0]!["extractor"]!;
+        Assert.Equal("metadata", passport["kind"]!.GetValue<string>());
+        Assert.Equal("pp", passport["name"]!.GetValue<string>());
+        var department = sent["named_keys"]![1]!["extractor"]!;
+        Assert.Equal("projection", department["kind"]!.GetValue<string>());
+        Assert.Equal("json", department["extractor"]!.GetValue<string>());
+        Assert.Equal(1, department["version"]!.GetValue<int>());
+        Assert.Equal("dept", department["field"]!.GetValue<string>());
     }
 
     [Fact]

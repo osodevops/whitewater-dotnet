@@ -17,23 +17,36 @@ public sealed class StateStoresClient
     /// <summary>
     /// Declare <paramref name="spec"/> on the Control Plane and return it
     /// bound to this client. <paramref name="source"/> names a same-Domain
-    /// Feed the store materializes from; null means a manual store
-    /// (required when the spec declares named keys).
+    /// Feed the store materializes from; null means a manual store.
+    /// Feed-sourced named keys must each declare an <see cref="Extractor"/>
+    /// so replay can project typed values; extractors on a manual store
+    /// are refused.
     /// </summary>
     public async Task<StateStore> DefineAsync(
         StateStore spec, string? source = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(spec);
-        if (spec.NamedKeys.Count > 0 && source != null)
+        if (source == null && spec.NamedKeys.Any(k => k.Extractor != null))
         {
             throw new ArgumentException(
-                "named keys require a manual StateStore until a declared "
-                + "source-Feed projection exists", nameof(source));
+                "named-key extractors apply to feed-sourced StateStores; "
+                + "manual stores take named values on each Put", nameof(spec));
+        }
+        if (source != null && spec.NamedKeys.Any(k => k.Extractor == null))
+        {
+            throw new ArgumentException(
+                "feed-sourced named keys require an extractor "
+                + "(Extractor.RecordKey()/Metadata()/Json())", nameof(source));
         }
         var namedKeys = new JsonArray();
         foreach (var key in spec.NamedKeys)
         {
-            namedKeys.Add(new JsonObject { ["name"] = key.Name, ["unique"] = key.Unique });
+            var entry = new JsonObject { ["name"] = key.Name, ["unique"] = key.Unique };
+            if (key.Extractor != null)
+            {
+                entry["extractor"] = key.Extractor.ToWire();
+            }
+            namedKeys.Add(entry);
         }
         var sourceNode = new JsonObject();
         if (source != null)

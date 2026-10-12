@@ -51,8 +51,13 @@ public sealed class StateStore
     /// <summary>The store's dotted name.</summary>
     public string Name { get; }
 
-    /// <summary>Declare a named secondary key for Define (at most <see cref="MaxNamedKeys"/>).</summary>
-    public StateStore AddKey(string namedKey, bool unique = false)
+    /// <summary>
+    /// Declare a named secondary key for Define (at most
+    /// <see cref="MaxNamedKeys"/>). <paramref name="extractor"/> declares
+    /// how replay projects each source-Feed record to this key's values —
+    /// required on feed-sourced stores, refused on manual ones.
+    /// </summary>
+    public StateStore AddKey(string namedKey, bool unique = false, Extractor? extractor = null)
     {
         if (string.IsNullOrWhiteSpace(namedKey))
         {
@@ -67,7 +72,7 @@ public sealed class StateStore
             throw new InvalidOperationException(
                 $"a StateStore declares at most {MaxNamedKeys} named keys");
         }
-        _declaredKeys.Add(new NamedKey(namedKey, unique));
+        _declaredKeys.Add(new NamedKey(namedKey, unique, extractor));
         return this;
     }
 
