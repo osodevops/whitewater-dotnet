@@ -137,3 +137,61 @@ public sealed record TemporaryFetchOptions(
 public sealed record TemporaryFetchPage(
     IReadOnlyList<FeedRecord> Records,
     Cursor? NextCursor);
+
+/// <summary>Bounds the named secondary keys one StateStore declares.</summary>
+public static class StateStoreLimits
+{
+    public const int MaxNamedKeys = 10;
+}
+
+/// <summary>
+/// One declared secondary key on a StateStore. Non-unique keys map a
+/// value to every primary row carrying it (the group/list lookup);
+/// <paramref name="Unique"/> enforces one row per value, arbitrated
+/// first-committed-wins by the store's journal order.
+/// </summary>
+public sealed record NamedKey(string Name, bool Unique);
+
+/// <summary>
+/// Freshness evidence every StateStore read reports: the serving
+/// replica's applied and committed journal positions, whether it
+/// answers behind its frontier, and which Node served.
+/// </summary>
+public sealed record StoreFreshness(
+    long AppliedSeq,
+    long CommittedSeq,
+    bool Behind,
+    string ServedBy);
+
+/// <summary>One StateStore row: its primary key and payload bytes plus
+/// the serving replica's freshness evidence when the read carried it.</summary>
+public sealed record StoreRow(
+    byte[] Key,
+    byte[] Payload,
+    string? AppliedCursor = null,
+    StoreFreshness? Freshness = null);
+
+/// <summary>A named-key lookup result: every primary row the value
+/// points at plus the serving replica's freshness evidence.</summary>
+public sealed record StoreRows(
+    IReadOnlyList<StoreRow> Rows,
+    StoreFreshness Freshness);
+
+/// <summary>One bounded iteration page in primary-key order.
+/// <paramref name="PinnedSeq"/> is the serving replica's applied journal
+/// position the page was pinned to — the iteration's freshness evidence.
+/// <paramref name="NextKey"/> continues the scan.</summary>
+public sealed record StorePage(
+    IReadOnlyList<StoreRow> Rows,
+    byte[]? NextKey,
+    long PinnedSeq,
+    string ServedBy);
+
+/// <summary>A committed StateStore mutation: its journal sequence and
+/// whether the <paramref name="MutationId"/> idempotency identity
+/// deduplicated a retry.</summary>
+public sealed record MutationResult(
+    Guid StoreId,
+    Guid MutationId,
+    long Sequence,
+    bool Deduplicated);

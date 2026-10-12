@@ -66,31 +66,35 @@ if (page.DeliveredCursor is { } frontier)
 ### Managed consume: `LoadAsync` + `Subscribe`
 
 ```csharp
-var store = RecordStore.Named("employee-store")
-    .AddKey("passport").AddKey("department");              // up to 10 named keys
-
-// One-shot bulk read of committed history, projected per row.
-await client.LoadStore(store).FromFeedAsync("hr.employees",
+// One-shot bulk read of committed history, delivered per page.
+var loaded = await client.Feeds.LoadAsync("hr.employees",
     ReaderStart.Beginning(),
-    (s, record) => s.Upsert(record)
-        .WithKey(record.Key)
-        .WithNamedKey("passport", record.Metadata["pp"]));
+    batch => { Export(batch); return Task.CompletedTask; });
 
-var rec = store.Get("emp-1");                    // by primary key
-var rows = store.Get("passport", "P123");        // by named key — non-unique, returns a list
-store.ForEachParallel(3, entry => Export(entry.Record));
-
-// ...then keep it warm: provisions the Reader, runs
+// ...or keep receiving: provisions the Reader, runs
 // Open -> [Fetch -> onRecords -> Ack] -> Close on a background task.
 await using var sub = client.Subscribe("hr-view", "hr.employees",
     ReaderStart.Now(),
-    batch => { store.PutAll(batch); return Task.CompletedTask; },
+    batch => { Export(batch); return Task.CompletedTask; },
     error => Console.Error.WriteLine($"subscription ended: {error}"));
 ```
 
-`client.Feeds.LoadAsync` remains the lighter one-shot read when you
-don't need named-key projections. See [docs/stores.md](docs/stores.md)
-for the full store guide.
+### Server-side StateStores
+
+```csharp
+var spec = StateStore.Named("accounts.employees")
+    .AddKey("passport", unique: true).AddKey("department");   // up to 10 named keys
+var store = await client.StateStores.DefineAsync(spec);       // durable store on the Nodes
+
+await store.PutAsync("emp-1"u8.ToArray(), payload,
+    new Dictionary<string, object?> { ["passport"] = "P123", ["department"] = "eng" });
+var row = await store.GetAsync("emp-1"u8.ToArray());            // StoreRow | null + freshness
+var rows = await store.GetByAsync("passport", "P123");          // named key — a list
+await foreach (var r in store.IterateAsync()) Export(r);
+```
+
+The store lives on the Nodes — the SDK holds no local copy. See
+[docs/stores.md](docs/stores.md) for the full store guide.
 
 ### Error handling
 

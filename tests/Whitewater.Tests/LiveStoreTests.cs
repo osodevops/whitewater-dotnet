@@ -4,9 +4,9 @@ using Xunit;
 namespace Whitewater.Tests;
 
 /// <summary>
-/// Live store smoke against a running Riverbed — create Domain + Feed,
-/// append keyed records with metadata, then <c>LoadStore</c> a projected
-/// history read and named-key lookups.
+/// Live store smoke against a running Riverbed — declares a named-key
+/// StateStore on the Nodes, then exercises put/get/getBy/iterate/delete/
+/// clear end to end.
 ///
 /// Runs only when <c>WHITEWATER_ENDPOINTS</c> is set (comma-separated),
 /// e.g. <c>http://localhost:7371,http://localhost:7372,http://localhost:7373</c>;
@@ -17,70 +17,64 @@ public class LiveStoreTests
     private static readonly string? Endpoints =
         Environment.GetEnvironmentVariable("WHITEWATER_ENDPOINTS");
 
+    private static byte[] Utf8(string value) => Encoding.UTF8.GetBytes(value);
+
     [Fact]
-    public async Task CreateWriteLoadAndQueryAStore()
+    public async Task DeclaresAndExercisesAServerSideStateStore()
     {
         if (Endpoints is null)
         {
             return; // env-gated: no Riverbed configured
         }
 
+        var endpoints = Endpoints
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(raw => raw.Trim())
+            .Select(raw => new Uri(raw.StartsWith("http") ? raw : "http://" + raw))
+            .ToArray();
         var client = new WhitewaterClient(
             Environment.GetEnvironmentVariable("WHITEWATER_API_KEY")
                 ?? "whitewater-local-development-admin-key",
-            Endpoints.Split(',').Select(raw => new Uri(raw.Trim())).ToArray());
+            endpoints);
 
         var domain = $"smoke.net{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}";
-        var feed = $"{domain}.events";
         Assert.True(await client.HealthyAsync());
         await client.CreateDomainAsync(domain);
-        await client.CreateFeedAsync(feed);
 
-        var session = Guid.NewGuid();
-        var rows = new (string Key, string Payload, string Department)[]
+        var spec = StateStore.Named($"{domain}.employees")
+            .AddKey("passport", unique: true)
+            .AddKey("department");
+        var store = await client.StateStores.DefineAsync(spec);
+        Assert.Equal($"{domain}.employees", store.Name);
+
+        await store.PutAsync(Utf8("emp-1"), Utf8("alice"),
+            new Dictionary<string, object?> { ["passport"] = "P111", ["department"] = "eng" });
+        await store.PutAsync(Utf8("emp-2"), Utf8("bob"),
+            new Dictionary<string, object?> { ["passport"] = "P222", ["department"] = "eng" });
+        await store.PutAsync(Utf8("emp-3"), Utf8("cara"),
+            new Dictionary<string, object?> { ["passport"] = "P333", ["department"] = "ops" });
+
+        var row = await store.GetAsync(Utf8("emp-1"), strict: true, waitMs: 5000);
+        Assert.NotNull(row);
+        Assert.Equal("alice", Encoding.UTF8.GetString(row.Payload));
+
+        var eng = await store.GetByAsync("department", "eng", strict: true, waitMs: 5000);
+        Assert.Equal(2, eng.Rows.Count);
+        Assert.True(eng.Freshness.AppliedSeq > 0);
+
+        var keys = new SortedSet<string>();
+        await foreach (var r in store.IterateAsync(limit: 1))
         {
-            ("emp-1", "alice", "eng"),
-            ("emp-2", "bob", "eng"),
-            ("emp-3", "cara", "ops"),
-        };
-        for (var i = 0; i < rows.Length; i++)
-        {
-            await client.Feeds.AppendAsync(feed, new FeedAppend(
-                Guid.NewGuid(), session, 1L, i + 1L,
-                Encoding.UTF8.GetBytes(rows[i].Key),
-                Encoding.UTF8.GetBytes(rows[i].Payload),
-                Metadata: new Dictionary<string, byte[]>
-                {
-                    ["department"] = Encoding.UTF8.GetBytes(rows[i].Department),
-                }));
+            keys.Add(Encoding.UTF8.GetString(r.Key));
         }
+        Assert.Equal(new SortedSet<string>(new[] { "emp-1", "emp-2", "emp-3" }), keys);
 
-        var store = RecordStore.Named("employee-store").AddKey("department");
-        var loaded = await client.LoadStore(store).FromFeedAsync(
-            feed, ReaderStart.Beginning(),
-            (s, record) => s.Upsert(record)
-                .WithKey(record.Key!)
-                .WithNamedKey("department", record.Metadata["department"]));
+        await store.DeleteAsync(Utf8("emp-1"));
+        Assert.Null(await store.GetAsync(Utf8("emp-1"), strict: true, waitMs: 5000));
+        Assert.Single((await store.GetByAsync(
+            "department", "eng", strict: true, waitMs: 5000)).Rows);
 
-        Assert.Equal(3, loaded);
-        Assert.Equal(3, store.Count);
-        Assert.Equal("alice", Encoding.UTF8.GetString(store.Get("emp-1")!.Payload));
-        Assert.Equal(2, store.Get("department", "eng").Count);
-        Assert.Single(store.Get("department", "ops"));
-
-        var copy = RecordStore.Named("employee-copy");
-        store.Copy(copy);
-        Assert.Equal(2, copy.Get("department", "eng").Count);
-        Assert.True(store.Delete("emp-1"));
-        Assert.Single(store.Get("department", "eng"));
-
-        var visited = 0;
-        store.ForEachParallel(2, entry =>
-        {
-            Assert.NotEmpty(entry.PrimaryKey);
-            Assert.NotEmpty(entry.Record.Payload);
-            Interlocked.Increment(ref visited);
-        });
-        Assert.Equal(2, visited);
+        await store.ClearAsync();
+        Assert.Empty((await store.PageAsync()).Rows);
     }
 }

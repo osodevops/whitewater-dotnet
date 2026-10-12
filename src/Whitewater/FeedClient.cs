@@ -112,19 +112,6 @@ public sealed class FeedClient
         }
     }
 
-    /// <summary><see cref="LoadAsync"/> that materializes into a <see cref="RecordStore"/>.</summary>
-    public Task<long> LoadAsync(
-        string feed, ReaderStart start, RecordStore store, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(store);
-        return LoadAsync(feed, start,
-            records =>
-            {
-                store.PutAll(records);
-                return Task.CompletedTask;
-            }, ct);
-    }
-
     private const int LoadPage = 512;
 
     private static TemporaryFetchOptions FirstPage(ReaderStart start) => start.Kind switch

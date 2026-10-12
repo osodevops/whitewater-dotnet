@@ -154,13 +154,17 @@ public class SubscribeLoadTests : IDisposable
         _temporaryPages.Enqueue(TemporaryPageJson("c1", "r1"));
         _temporaryPages.Enqueue(TemporaryPageJson("c2", "r2"));
 
-        var store = RecordStore.Named("employee-store");
+        var sink = new List<IReadOnlyList<FeedRecord>>();
         var loaded = await _client.Feeds.LoadAsync(
-            "hr.employees", ReaderStart.Beginning(), store);
+            "hr.employees", ReaderStart.Beginning(),
+            records =>
+            {
+                sink.Add(records);
+                return Task.CompletedTask;
+            });
 
         Assert.Equal(2, loaded);
-        Assert.Equal(2, store.Count);
-        Assert.NotNull(store.Get(Encoding.UTF8.GetBytes("k-r1")));
+        Assert.Equal(new[] { "r1", "r2" }, sink.SelectMany(r => r).Select(r => r.Cursor.Value));
         var bodies = TemporaryBodies();
         Assert.Equal(3, bodies.Count);
         var first = JsonNode.Parse(bodies[0])!;
@@ -225,58 +229,4 @@ public class SubscribeLoadTests : IDisposable
         Assert.False(sub.Running);
     }
 
-    [Fact]
-    public async Task LoadStoreProjectsRowsThroughTheUpsertCallback()
-    {
-        _temporaryPages.Enqueue(TemporaryPageJson("c2", "r1", "r2"));
-        _temporaryPages.Enqueue(TemporaryPageJson(null));
-
-        var store = RecordStore.Named("employee-store").AddKey("department");
-        var loaded = await _client.LoadStore(store).FromFeedAsync(
-            "hr.employees", ReaderStart.Beginning(),
-            (s, record) => s.Upsert(record)
-                .WithKey(record.Key!)
-                .WithNamedKey("department", "eng"));
-
-        Assert.Equal(2, loaded);
-        Assert.Equal(2, store.Get("department", "eng").Count);
-        Assert.Equal("r1", store.Get("k-r1")!.Cursor.Value);
-        Assert.Throws<ArgumentException>(() => store.Get("undeclared", "x"));
-
-        Assert.True(store.Delete("k-r1"));
-        Assert.Single(store.Get("department", "eng"));
-
-        store.Clear();
-        Assert.Equal(0, store.Count);
-        Assert.Empty(store.Get("department", "eng"));
-    }
-
-    [Fact]
-    public async Task CopyCarriesNamedPostingsAndForEachParallelVisitsEveryRow()
-    {
-        _temporaryPages.Enqueue(TemporaryPageJson("c2", "r1", "r2"));
-        _temporaryPages.Enqueue(TemporaryPageJson(null));
-
-        var store = RecordStore.Named("src").AddKey("team");
-        await _client.LoadStore(store).FromFeedAsync(
-            "hr.employees", ReaderStart.Beginning(),
-            (s, record) => s.Upsert(record)
-                .WithKey(record.Key!)
-                .WithNamedKey("team", record.Cursor.Value));
-
-        var target = RecordStore.Named("dst");
-        store.Copy(target);
-        Assert.Equal(2, target.Count);
-        Assert.Equal(new[] { "team" }, target.NamedKeys);
-        Assert.Single(target.Get("team", "r1"));
-
-        var seen = 0;
-        store.ForEachParallel(3, entry =>
-        {
-            Assert.NotEmpty(entry.PrimaryKey);
-            Assert.False(string.IsNullOrEmpty(entry.Record.Cursor.Value));
-            Interlocked.Increment(ref seen);
-        });
-        Assert.Equal(2, seen);
-    }
 }

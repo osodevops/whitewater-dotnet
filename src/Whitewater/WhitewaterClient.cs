@@ -17,6 +17,7 @@ public sealed class WhitewaterClient
     {
         _transport = new Transport(endpoints, apiKey, timeout ?? TimeSpan.FromSeconds(60));
         Feeds = new FeedClient(_transport);
+        StateStores = new StateStoresClient(_transport);
     }
 
     /// <summary>Shared transport for low-level calls not yet covered by
@@ -245,6 +246,8 @@ public sealed class WhitewaterClient
 
     /// <summary>Lowercase dotted names:
     /// <c>^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*$</c>, ≤512 bytes.</summary>
+    internal static string DottedName(string name) => Dotted(name);
+
     private static string Dotted(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
@@ -298,57 +301,13 @@ public sealed class WhitewaterClient
         => new(this, reader, feed, start, SubscribeCapacity, onRecords, onError);
 
     /// <summary>
-    /// Bulk materialization of Feed history into a <see cref="RecordStore"/>:
-    /// the <c>FromFeedAsync</c> projection callback picks each row's primary
-    /// key and named-key values via <c>store.Upsert(record)</c>:
-    ///
-    /// <code>
-    /// var store = RecordStore.Named("employee-store").AddKey("passport");
-    /// var loaded = await client.LoadStore(store).FromFeedAsync("hr.employees",
-    ///     ReaderStart.Beginning(),
-    ///     (s, record) => s.Upsert(record)
-    ///         .WithKey(record.Key)
-    ///         .WithNamedKey("passport", record.Metadata["pp"]));
-    /// </code>
+    /// A thin facade over the node-side StateStore <paramref name="name"/> —
+    /// rows live on the Nodes (RF3 + Fjall); this client holds no state.
     /// </summary>
-    public LoadStore LoadStore(RecordStore store)
-    {
-        ArgumentNullException.ThrowIfNull(store);
-        return new LoadStore(this, store);
-    }
+    public StateStore StateStore(string name) => Whitewater.StateStore.Bound(_transport, name);
+
+    /// <summary>Collection-level StateStore operations: declare, drop.</summary>
+    public StateStoresClient StateStores { get; }
 
     private const int SubscribeCapacity = 128;
-}
-
-/// <summary>The <see cref="WhitewaterClient.LoadStore"/> operation builder.</summary>
-public sealed class LoadStore
-{
-    private readonly WhitewaterClient _client;
-    private readonly RecordStore _store;
-
-    internal LoadStore(WhitewaterClient client, RecordStore store)
-    {
-        _client = client;
-        _store = store;
-    }
-
-    /// <summary>
-    /// Read committed history of <paramref name="feed"/> from
-    /// <paramref name="start"/>, invoking <paramref name="projection"/> per
-    /// record until the frontier is drained; returns the number of records
-    /// loaded.
-    /// </summary>
-    public Task<long> FromFeedAsync(
-        string feed,
-        ReaderStart start,
-        Action<RecordStore, FeedRecord> projection,
-        CancellationToken cancellationToken = default)
-        => _client.Feeds.LoadAsync(feed, start, records =>
-        {
-            foreach (var record in records)
-            {
-                projection(_store, record);
-            }
-            return Task.CompletedTask;
-        }, cancellationToken);
 }

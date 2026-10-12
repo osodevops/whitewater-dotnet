@@ -201,6 +201,143 @@ internal static class Wire
             node?["ownership_epoch"]?.GetValue<long>() ?? 0);
     }
 
+    /// <summary>
+    /// One typed StateStore/Index value for the wire: null -> null,
+    /// bool -> bool, integral types -> i64, string -> text, byte[] ->
+    /// bytes. Floating-point and decimal values are refused — the wire
+    /// carries exact i64/text/bytes.
+    /// </summary>
+    public static JsonObject IndexValue(object? value)
+    {
+        var node = new JsonObject();
+        switch (value)
+        {
+            case null:
+                node["kind"] = "null";
+                break;
+            case bool flag:
+                node["kind"] = "bool";
+                node["value"] = flag;
+                break;
+            case byte or sbyte or short or ushort or int or uint or long:
+                node["kind"] = "i64";
+                node["value"] = Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+                break;
+            case ulong unsigned:
+                if (unsigned > long.MaxValue)
+                {
+                    throw new ArgumentException("StateStore i64 value overflows", nameof(value));
+                }
+                node["kind"] = "i64";
+                node["value"] = (long)unsigned;
+                break;
+            case System.Numerics.BigInteger big:
+                if (big > long.MaxValue || big < long.MinValue)
+                {
+                    throw new ArgumentException("StateStore i64 value overflows", nameof(value));
+                }
+                node["kind"] = "i64";
+                node["value"] = (long)big;
+                break;
+            case string text:
+                node["kind"] = "text";
+                node["value"] = text;
+                break;
+            case byte[] bytes:
+                node["kind"] = "bytes";
+                node["value_base64"] = Convert.ToBase64String(bytes);
+                break;
+            default:
+                throw new ArgumentException(
+                    $"unsupported StateStore value type: {value.GetType().Name}", nameof(value));
+        }
+        return node;
+    }
+
+    /// <summary>{@code { department: "eng", composite: new object[]{ v1, v2 } }}
+    /// -> the mutation's named entries.</summary>
+    public static JsonArray NamedValues(IReadOnlyDictionary<string, object?> named)
+    {
+        var array = new JsonArray();
+        foreach (var (name, value) in named)
+        {
+            var values = new JsonArray();
+            if (value is System.Collections.IEnumerable list and not string and not byte[])
+            {
+                foreach (var component in list)
+                {
+                    values.Add(IndexValue(component));
+                }
+            }
+            else
+            {
+                values.Add(IndexValue(value));
+            }
+            array.Add(new JsonObject { ["name"] = name, ["values"] = values });
+        }
+        return array;
+    }
+
+    public static MutationResult MutationResultOf(JsonNode? node)
+    {
+        return new MutationResult(
+            Guid.Parse(node?["store_id"]?.GetValue<string>() ?? throw Corrupt("store_id")),
+            Guid.Parse(node["mutation_id"]!.GetValue<string>()),
+            node["sequence"]?.GetValue<long>() ?? 0,
+            node["deduplicated"]?.GetValue<bool>() ?? false);
+    }
+
+    public static StoreFreshness StoreFreshnessOf(JsonNode? node)
+    {
+        return new StoreFreshness(
+            node?["applied_seq"]?.GetValue<long>() ?? 0,
+            node?["committed_seq"]?.GetValue<long>() ?? 0,
+            node?["behind"]?.GetValue<bool>() ?? false,
+            node?["served_by"]?.GetValue<string>() ?? "");
+    }
+
+    public static StoreRow StoreRowOf(JsonNode? node, StoreFreshness? freshness)
+    {
+        var cursor = node?["applied_cursor"]?.GetValue<string>();
+        return new StoreRow(
+            Convert.FromBase64String(node?["key_base64"]?.GetValue<string>() ?? ""),
+            Convert.FromBase64String(node?["payload_base64"]?.GetValue<string>() ?? ""),
+            string.IsNullOrEmpty(cursor) ? null : cursor,
+            freshness);
+    }
+
+    public static StoreRows StoreRowsOf(JsonNode? node)
+    {
+        var freshness = StoreFreshnessOf(node);
+        var rows = new List<StoreRow>();
+        if (node?["rows"] is JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                rows.Add(StoreRowOf(item, freshness));
+            }
+        }
+        return new StoreRows(rows, freshness);
+    }
+
+    public static StorePage StorePageOf(JsonNode? node)
+    {
+        var rows = new List<StoreRow>();
+        if (node?["rows"] is JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                rows.Add(StoreRowOf(item, null));
+            }
+        }
+        var next = node?["next_key_base64"]?.GetValue<string>();
+        return new StorePage(
+            rows,
+            string.IsNullOrEmpty(next) ? null : Convert.FromBase64String(next),
+            node?["pinned_seq"]?.GetValue<long>() ?? 0,
+            node?["served_by"]?.GetValue<string>() ?? "");
+    }
+
     private static InvalidOperationException Corrupt(string field)
     {
         return new InvalidOperationException($"Riverbed response missing {field}");

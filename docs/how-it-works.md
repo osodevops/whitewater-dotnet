@@ -80,15 +80,7 @@ Two managed wrappers sit on top of those primitives:
 
 - **`Feeds.LoadAsync(feed, start, sink)`** — one-shot bulk read: pages
   `TemporaryFetchAsync` from `ReaderStart` until the frontier is
-  drained. `sink` is a `RecordStore` or any
-  `Func<IReadOnlyList<FeedRecord>, Task>`.
-- **`client.LoadStore(store).FromFeedAsync(feed, start, projection)`** —
-  the same bulk read with a per-record projection: `RecordStore`
-  declares up to 10 named secondary keys (`AddKey`), and the callback
-  writes each row via `store.Upsert(r).WithKey(k).WithNamedKey(n, v)`.
-  Store ops: `Get(key)`, `Get(namedKey, value)` (non-unique — returns
-  a list), `Delete`, `Clear`, `Copy(target)`, `ForEach`,
-  `ForEachParallel(threads, action)` — `Parallel.ForEach` bound.
+  drained. `sink` is any `Func<IReadOnlyList<FeedRecord>, Task>`.
 - **`Subscribe(reader, feed, start, onRecords[, onError])`** — a durable
   consume loop on a background task: provisions the Reader when missing,
   then `OpenAsync` → [`FetchAsync` → `onRecords` → `AckAsync`] →

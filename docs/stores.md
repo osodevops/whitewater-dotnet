@@ -1,149 +1,120 @@
-# RecordStore and LoadStore — coding guide
+# StateStore — coding guide
 
-A `RecordStore` is a named, thread-safe, in-memory projection of Feed
-records. Fill it once with `client.LoadStore(store).FromFeedAsync`
-(bulk history) and keep it warm with `client.Subscribe` (live tail) —
-the Whitewater equivalent of a local materialized view.
-
-## Store anatomy
-
-Two structures per store:
-
-- **Primary map** — `primary key -> FeedRecord`. One row per key; a new
-  row for an existing key replaces it.
-- **Named-key posting maps** — one per declared named key, conceptually
-  `employee-store.passport`: `named value -> set of primary keys`.
-  Named keys are **not unique** — many rows may share one named value,
-  so lookups return a list.
+There is exactly one store: the **node-side StateStore** — durable,
+RF3-replicated, Fjall-backed, and queryable from any Node. The SDK's
+`StateStore` is a thin facade over it: it holds no rows, keeps no local
+projection, and every operation is an HTTP call with freshness evidence.
 
 ```csharp
-var store = RecordStore.Named("employee-store")
-    .AddKey("passport")           // declare before use
-    .AddKey("department");        // at most RecordStore.MaxNamedKeys (10)
+var spec = StateStore.Named("accounts.employees")
+    .AddKey("passport", unique: true)        // unique: one row per value
+    .AddKey("department");                   // non-unique: value -> many rows
+
+var store = await client.StateStores.DefineAsync(spec);   // manual store
+// or a bound facade for an already-declared store:
+var same = client.StateStore("accounts.employees");
 ```
 
-`AddKey` returns the store for chaining. An eleventh key throws
-`InvalidOperationException`; blank names throw `ArgumentException`.
+`AddKey` records declaration intent used by `DefineAsync` — named keys
+are declared at creation; at most `StateStore.MaxNamedKeys` (10). Adding
+a key to an existing store has no effect server-side.
 
-## Loading history: `client.LoadStore(store).FromFeedAsync(...)`
+## Writing
 
 ```csharp
-var loaded = await client.LoadStore(store).FromFeedAsync(
-    "hr.employees",
-    ReaderStart.Beginning(),            // or .Now(), .Cursor(c), .TimestampNs(ns)
-    (s, record) => s.Upsert(record)
-        .WithKey(record.Key!)                          // primary key
-        .WithNamedKey("passport", record.Metadata["pp"])
-        .WithNamedKey("department", "eng"));           // string overloads are UTF-8
+await store.PutAsync(Utf8("user-1"), Utf8("profile-1"),
+    new Dictionary<string, object?>
+    {
+        ["passport"] = "P111",
+        ["department"] = "eng",
+        ["salary"] = 92000L,
+        ["active"] = true,
+        ["badge"] = new byte[] { 1, 2 },
+        ["note"] = null,
+    });
+await store.DeleteAsync(Utf8("user-1"));                  // mutationId generated
+await store.DeleteAsync(Utf8("user-1"), stableMutationUuid);
 ```
 
-Semantics, in order:
+- `PutAsync` commits one journaled `put_row` through the store's RF3
+  quorum and returns a `MutationResult(StoreId, MutationId, Sequence,
+  Deduplicated)`.
+- Named values are **typed**: `string` -> text, integral types
+  (`byte`…`long`, `ulong`/`BigInteger` within i64) -> i64, `bool` ->
+  bool, `byte[]` -> bytes, `null` -> null. An enumerable value carries
+  one typed value per posting component. `float`/`double`/`decimal`
+  are refused — the wire carries exact i64/text/bytes.
+- Named values must match the store's declared keys — the server
+  refuses undeclared names. `unique` claims arbitrate
+  first-committed-wins by journal order.
+- `mutationId` is the idempotency identity: retry a timed-out `PutAsync`
+  with the same ID and it dedupes; reuse it with different contents and
+  it conflicts.
 
-1. Pages `TemporaryFetchAsync` from `start` until the frontier is
-   drained — a **one-shot bounded read**, not a tail. The optional
-   `CancellationToken` cancels mid-read.
-2. For every record the projection runs `s.Upsert(record)`.
-3. `WithKey(byte[])` chooses the primary key. Defaults to `record.Key`;
-   pass anything — a composite `"dept:emp-1"` — and the row re-keys
-   (old postings are stripped first). `WithKey(string)` is UTF-8; null
-   falls back to the record's own key/cursor.
-4. `WithNamedKey(name, byte[])` attaches one named-key value; call it
-   once per declared key you want indexed. An **undeclared** named key
-   throws `ArgumentException` — a projection bug fails the load, never
-   silently writes an unindexed row.
-5. Returns the count of records read (not rows written — re-keys
-   replace, they don't duplicate).
-
-Skip `WithNamedKey` and the row lands in the primary map only — fully
-readable, just not indexable by that named key.
-
-`client.Feeds.LoadAsync(feed, start, sink)` remains the lighter "dump
-history" path; `sink` may be the store itself (rows key on
-`record.Key`, cursor fallback for unkeyed records) or a
-`Func<IReadOnlyList<FeedRecord>, Task>`.
-
-## Keeping the store warm: `Subscribe`
+## Reading
 
 ```csharp
-await using var sub = client.Subscribe("hr-view", "hr.employees",
-    ReaderStart.Now(),                              // only new records
-    batch => {                                      // per fetched page
-        foreach (var r in batch)
-        {
-            store.Upsert(r)
-                .WithKey(r.Key!)
-                .WithNamedKey("department", r.Metadata["department"]);
-        }
-        return Task.CompletedTask;
-    },
-    error => Console.Error.WriteLine($"subscription ended: {error}"));
-// ...the loop runs on a background task until DisposeAsync()
+var row = await store.GetAsync(Utf8("user-1"));            // StoreRow | null
+row.Payload;                                               // byte[]
+row.Freshness;              // AppliedSeq / CommittedSeq / Behind / ServedBy
+
+var result = await store.GetByAsync("department", "eng");
+result.Rows;                              // IReadOnlyList<StoreRow> — every match
+result.Freshness.ServedBy;                // which Node answered
 ```
 
-Delivery is **at-least-once**: records land in `onRecords`, then the
-loop acks `deliveredCursor`. A crash between callback and ack replays —
-make the projection idempotent (upsert semantics already are).
+`GetByAsync` is the group/list lookup: one non-unique named value
+resolves to **every** primary row carrying it. `strict` + `waitMs`
+bounded-waits for the serving replica to apply its committed frontier
+rather than answering stale; non-strict reads still report
+`Freshness.Behind` honestly.
 
-## Reading the store
+## Iterating
 
 ```csharp
-store.Get("emp-1");                    // FeedRecord? by primary key (string = UTF-8)
-store.Get(keyBytes);                   // byte[] overload
-store.Get("passport", "P123");         // IReadOnlyList<FeedRecord> — every match
-store.Get("undeclared", "x");          // throws ArgumentException
-store.Count;                           // row count
-store.NamedKeys;                       // declared keys, in order
-store.Name;                            // "employee-store"
-foreach (var e in store) { /* e.PrimaryKey (byte[]), e.Record */ }
-store.ForEach(e => Export(e.Record));  // stable snapshot iteration
+await foreach (var row in store.IterateAsync(limit: 256)) Export(row);
+
+var page = await store.PageAsync(afterKey, 256);   // one bounded page
+page.NextKey;                                    // continuation, or null
+page.PinnedSeq;                                  // journal position pinned to
 ```
 
-## Mutating outside a load
+`IterateAsync`/`PageAsync` ride `/v1/state-stores/iterate` — the same
+bounded, key-ordered row set replica catch-up serves — so `PinnedSeq`
+is the iteration's freshness evidence.
+
+## Lifecycle
 
 ```csharp
-store.Put(record);                     // primary-key upsert, no named keys
-store.PutAll(batch);                   // subscribe-ready sink shape
-store.Upsert(record).WithKey("custom");// same builder as projections
-store.Delete("emp-1");                 // removes row + all its postings
-store.Clear();                         // empties everything
+await store.ClearAsync();                       // one journaled ClearAll
+await store.DropAsync();                        // or client.StateStores.DropAsync(name)
 ```
 
-`Delete` and `Clear` strip named-key postings too — a deleted row never
-lingers in a `Get(namedKey, value)` result.
+- `ClearAsync` empties the store as one durable, idempotent mutation;
+  replicas sweep rows and postings in bounded batches.
+- `DropAsync` tombstones the definition — the name cannot be recreated
+  and every data path refuses. Rows already applied on replicas remain
+  until a bounded reclaim pass.
+- Feed-sourced stores: `client.StateStores.DefineAsync(spec, "accounts.events")`
+  materializes committed Feed history; named keys require a manual
+  store until declared projections exist.
 
-## Copying and parallel work
+## What a StateStore facade is **not**
 
-```csharp
-var replica = RecordStore.Named("employee-backup");
-store.Copy(replica);                   // rows + named postings; declares
-                                       // missing keys on the target
-store.ForEachParallel(3, entry => Rebuild(entry));
-```
+- **Not a local store** — there is no in-process copy to drift from
+  the Nodes. Every read goes to a replica; freshness evidence tells
+  you how current it was.
+- **Not unique on non-unique keys** — `GetByAsync` always returns a list.
 
-`ForEachParallel` is a `Parallel.ForEach` bound to
-`MaxDegreeOfParallelism = threads` — real thread-pool parallelism over a
-stable snapshot. `threads < 1` throws `ArgumentOutOfRangeException`.
-The callback runs concurrently on multiple threads — keep it free of
-un-synchronized shared state (the store itself is thread-safe).
-
-## Error handling reference
+## Errors
 
 | Where | Type | Meaning / remedy |
 |---|---|---|
-| `AddKey` #11 | `InvalidOperationException` | Store key budget (10) exceeded — declare fewer keys. |
-| `AddKey`/`Get`/`WithNamedKey` undeclared or blank | `ArgumentException` | Programming error — declare the key or fix the name. |
-| `FromFeedAsync` mid-read | `WhitewaterException` (usually `Unavailable`) | Transport refused a page; retry the call — re-upserts are idempotent. |
-| `Subscribe` transient | retried internally | `Unavailable`/`AmbiguousResult` backoff inside the loop. |
-| `Subscribe` terminal | `onError` + `sub.Failure` | `WhitewaterException.StaleSession` (another client opened your Reader — pick a unique name or take over deliberately), `.Refused`, `.Conflict`. The loop is dead; inspect, fix, re-subscribe. |
-
-Catch specific subtypes — `catch (WhitewaterException.StaleSession)` —
-and inspect `Status`/`Code` for wire detail.
-
-## What a RecordStore is **not**
-
-- **Not durable** — it dies with the process. Rebuild is cheap:
-  `FromFeedAsync` from `ReaderStart.Beginning()` (or a snapshot Cursor).
-- **Not a server StateStore** — the server-side replicated store model
-  is a separate, later seam. This is the client-side projection.
-- **Not unique on named keys** — `Get(namedKey, value)` always returns a
-  list, even when it happens to hold one row.
+| `AddKey` #11 / duplicate / blank | `InvalidOperationException` / `ArgumentException` | Declaration contract (10-key bound, distinct names). |
+| `DefineAsync` spec + `source` + named keys | `ArgumentException` | Named keys need a manual store — checked before the call. |
+| Data op on unbound spec | `InvalidOperationException` | `StateStore.Named` builds a spec; bind via `DefineAsync` or `client.StateStore(name)`. |
+| `float`/`double`/`decimal` named value | `ArgumentException` | The wire carries exact i64 — pass an integral type. |
+| Undeclared named key / missing store | `WhitewaterException` 400 | Server-side contract — fix the declaration. |
+| `mutationId` reused differently | `WhitewaterException` 409 | Retry with the original contents or a fresh ID. |
+| No quorum / replica down | `WhitewaterException` 503 | Retry — the journal needs a quorum to commit. |
+| `strict` read can't catch up | `WhitewaterException` 409 `index_behind` | Bounded wait expired; retry or drop `strict`. |
