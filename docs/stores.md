@@ -99,6 +99,33 @@ await store.DropAsync();                        // or client.StateStores.DropAsy
   materializes committed Feed history; named keys require a manual
   store until declared projections exist.
 
+### WCL and typed commands
+
+Everything above is a convenience over the Control Plane's two doors.
+WCL spells `DROP` for stores (there is no `DEFINE`/`MUTATE` spelling —
+declaration and data ops stay typed):
+
+```csharp
+await client.WclAsync("DROP STATESTORE accounts.employees");
+await client.WclAsync("DESCRIBE STATESTORE accounts.employees"); // stage incl. "dropped"
+```
+
+`CommandsAsync` posts the typed command the facade builds for you:
+
+```csharp
+await client.CommandsAsync(new[]
+{
+    new JsonObject
+    {
+        ["command"] = "define_state_store",
+        ["name"] = "accounts.employees",
+        ["source"] = new JsonObject { ["kind"] = "manual" },
+        ["named_keys"] = new JsonArray
+            { new JsonObject { ["name"] = "passport", ["unique"] = true } },
+    },
+});
+```
+
 ## What a StateStore facade is **not**
 
 - **Not a local store** — there is no in-process copy to drift from

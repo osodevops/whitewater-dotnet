@@ -62,6 +62,63 @@ Every management call returns `ControlExecution` — `RequestId`,
 `Revision`, `Authority`, `Warning`, and one `StatementResult` per WCL
 statement (`Data` is a `JsonNode`).
 
+### WCL by example
+
+Raw script — several statements commit as one request (pass a shared
+`requestId` to dedupe a retried batch):
+
+```csharp
+await client.WclAsync("""
+    CREATE DOMAIN shop;
+    CREATE FEED shop.orders;
+    CREATE WRITER orders-writer TO shop.orders;
+    OPEN WRITER SESSION orders-writer;
+    CREATE READER audit FROM shop.orders START AT BEGINNING;
+    SHOW FEEDS;
+    """);
+```
+
+The same calls through the typed builders — each serializes one WCL
+statement and calls `WclAsync` internally:
+
+```csharp
+await client.CreateDomainAsync("shop");              // CREATE DOMAIN shop;
+await client.CreateFeedAsync("shop.orders");         // CREATE FEED shop.orders;
+await client.CreateWriterAsync("orders-writer", "shop.orders");
+await client.OpenWriterSessionAsync("orders-writer");// epoch in .Data
+await client.CreateReaderAsync("audit", "shop.orders", ReaderStart.Beginning());
+await client.ListFeedsAsync();                       // SHOW FEEDS;
+await client.SeekReaderAsync("audit", ReaderStart.Now()); // SEEK ... TO NOW;
+await client.DropFeedAsync("shop.orders");           // DROP FEED shop.orders;
+```
+
+`client.CommandsAsync(...)` is the second door — the typed JSON
+command path for what WCL does not spell. Declaring a StateStore with
+named keys is the current example (there is no `DEFINE STATESTORE`
+WCL statement yet):
+
+```csharp
+await client.CommandsAsync(new[]
+{
+    new JsonObject
+    {
+        ["command"] = "define_state_store",
+        ["name"] = "accounts.employees",
+        ["source"] = new JsonObject { ["kind"] = "manual" },
+        ["named_keys"] = new JsonArray
+        {
+            new JsonObject { ["name"] = "passport", ["unique"] = true },
+            new JsonObject { ["name"] = "department", ["unique"] = false },
+        },
+    },
+});
+```
+
+(`client.StateStores.DefineAsync(spec)` posts exactly this body for
+you.) `DROP` is spelled in WCL for every resource including stores:
+`await client.WclAsync("DROP STATESTORE accounts.employees")` ≡
+`store.DropAsync()`.
+
 ## Reading
 
 Three shapes, in increasing durability:
