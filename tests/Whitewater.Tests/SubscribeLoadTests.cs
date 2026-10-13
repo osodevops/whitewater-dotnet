@@ -125,6 +125,8 @@ public class SubscribeLoadTests : IDisposable
     private string Route(string path) => path switch
     {
         "/v1/admin/wcl" => WclOk,
+        "/v1/feeds/append" or "/v1/writers/append" => "{\"message_id\":\"00000000-0000-4000-8000-000000000001\",\"cursor\":\"opaque\",\"deduplicated\":false}",
+        "/v1/writers/append-batch" => "{\"results\":[],\"feedback\":{}}",
         "/v1/readers/open" or "/v1/readers/ack" or "/v1/readers/close" => Session,
         "/v1/readers/fetch" => _fetchPages.TryDequeue(out var page)
             ? page
@@ -146,6 +148,33 @@ public class SubscribeLoadTests : IDisposable
         _listener.Stop();
         _listener.Close();
         _stop.Dispose();
+    }
+
+    [Fact]
+    public async Task CompressionCanBeToggledForFeedAndWriterWithoutChangingPayloads()
+    {
+        var feeds = _client.Feeds;
+        var writer = _client.Writer("orders.writer", 7);
+        var id = Guid.NewGuid();
+        var record = new FeedAppend(id, Guid.NewGuid(), 1, 1, new byte[] { 1 }, new byte[] { 0, 255 });
+        foreach (var enabled in new[] { false, true, false, true })
+        {
+            feeds = feeds.UseCompression(enabled);
+            await feeds.AppendAsync("orders.events", record);
+            writer = writer.UseCompression(enabled);
+            await writer.AppendAsync(record.Key, record.Payload, id);
+            await writer.AppendBatchAsync(new[] { new WriterSessionClient.AppendInput(record.Key, record.Payload, id) });
+            foreach (var call in _calls.ToArray().TakeLast(3))
+            {
+                var body = JsonNode.Parse(call.Body)!;
+                if (call.Path == "/v1/writers/append-batch") body = body["records"]![0]!;
+                Assert.Equal(enabled, body["use_compression"]?.GetValue<bool>() ?? false);
+                Assert.Equal("AP8=", body["payload_base64"]!.GetValue<string>());
+                Assert.Equal(id.ToString(), body["request_id"]!.GetValue<string>());
+            }
+        }
+        await _client.Feeds.AppendAsync("orders.events", record);
+        Assert.Null(JsonNode.Parse(_calls.ToArray().Last().Body)!["use_compression"]);
     }
 
     [Fact]

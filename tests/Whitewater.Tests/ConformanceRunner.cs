@@ -210,8 +210,8 @@ public class ConformanceRunner
                     DecodeBytes(args["payload"])!,
                     args["event_time_ns"] is { } ns ? long.Parse(ns.GetValue<string>()) : null,
                     DecodeMetadata(args["metadata"] as JsonObject));
-                return ResultNode(await client.Feeds.AppendAsync(
-                    args["feed"]!.GetValue<string>(), record));
+                return ResultNode(await client.Feeds.UseCompression(args["use_compression"]?.GetValue<bool>() ?? false)
+                    .AppendAsync(args["feed"]!.GetValue<string>(), record));
             }
             case "reader.temporary_fetch":
             {
@@ -228,7 +228,7 @@ public class ConformanceRunner
             }
             case "writer.append":
             {
-                var writer = SessionWriter(client, args);
+                var writer = SessionWriter(client, args).UseCompression(args["use_compression"]?.GetValue<bool>() ?? false);
                 return ResultNode(await writer.AppendAsync(
                     DecodeBytes(args["key"]),
                     DecodeBytes(args["payload"])!,
@@ -253,7 +253,8 @@ public class ConformanceRunner
                 }
                 // Batch writer/session come from the first record; every
                 // record in a fixture batch shares them.
-                var batchWriter = SessionWriter(client, args["records"]![0]!.AsObject());
+                var batchWriter = SessionWriter(client, args["records"]![0]!.AsObject())
+                    .UseCompression(args["use_compression"]?.GetValue<bool>() ?? false);
                 return ResultNode(await batchWriter.AppendBatchAsync(records));
             }
             case "reader.open":

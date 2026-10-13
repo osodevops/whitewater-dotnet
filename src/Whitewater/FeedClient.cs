@@ -11,8 +11,15 @@ namespace Whitewater;
 public sealed class FeedClient
 {
     private readonly Transport _transport;
+    private readonly bool _compression;
 
-    internal FeedClient(Transport transport) => _transport = transport;
+    internal FeedClient(Transport transport, bool compression = false)
+    {
+        _transport = transport;
+        _compression = compression;
+    }
+
+    public FeedClient UseCompression(bool enabled = true) => new(_transport, enabled);
 
     /// <summary>Committed record history via GET /v1/feeds/records.</summary>
     public async Task<IReadOnlyList<FeedRecord>> RecordsAsync(
@@ -74,8 +81,10 @@ public sealed class FeedClient
     public async Task<AppendResult> AppendAsync(
         string feed, FeedAppend record, CancellationToken ct = default)
     {
+        var body = Wire.FeedAppendRequest(feed, record);
+        if (_compression) body["use_compression"] = true;
         return Wire.AppendResultOf(await _transport
-            .PostAsync("/v1/feeds/append", Wire.FeedAppendRequest(feed, record), ct)
+            .PostAsync("/v1/feeds/append", body, ct)
             .ConfigureAwait(false));
     }
 

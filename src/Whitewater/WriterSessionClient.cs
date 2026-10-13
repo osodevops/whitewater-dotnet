@@ -9,13 +9,18 @@ public sealed class WriterSessionClient
     private readonly Transport _transport;
     private readonly string _writer;
     private readonly long _sessionEpoch;
+    private readonly bool _compression;
 
-    internal WriterSessionClient(Transport transport, string writer, long sessionEpoch)
+    internal WriterSessionClient(Transport transport, string writer, long sessionEpoch, bool compression = false)
     {
         _transport = transport;
         _writer = writer;
         _sessionEpoch = sessionEpoch;
+        _compression = compression;
     }
+
+    public WriterSessionClient UseCompression(bool enabled = true) =>
+        new(_transport, _writer, _sessionEpoch, enabled);
 
     /// <summary>Idempotent single append; the same requestId dedups on the server.</summary>
     public async Task<AppendResult> AppendAsync(
@@ -34,6 +39,7 @@ public sealed class WriterSessionClient
             payload,
             eventTimeNs,
             metadata ?? new Dictionary<string, byte[]>());
+        if (_compression) body["use_compression"] = true;
         return Wire.AppendResultOf(await _transport
             .PostAsync("/v1/writers/append", body, ct)
             .ConfigureAwait(false));
@@ -46,14 +52,16 @@ public sealed class WriterSessionClient
         var array = new JsonArray();
         foreach (var record in records)
         {
-            array.Add(Wire.AppendRequest(
+            var body = Wire.AppendRequest(
                 record.RequestId ?? Guid.NewGuid(),
                 _writer,
                 _sessionEpoch,
                 record.Key,
                 record.Payload,
                 record.EventTimeNs,
-                record.Metadata ?? new Dictionary<string, byte[]>()));
+                record.Metadata ?? new Dictionary<string, byte[]>());
+            if (_compression) body["use_compression"] = true;
+            array.Add(body);
         }
         var response = await _transport
             .PostAsync("/v1/writers/append-batch", new JsonObject { ["records"] = array }, ct)
