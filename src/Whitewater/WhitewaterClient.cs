@@ -72,6 +72,88 @@ public sealed class WhitewaterClient
         return health?["status"]?.GetValue<string>() == "ok";
     }
 
+    // ---- Pipe lifecycle ------------------------------------------------------
+
+    /// <summary>Bind a declared Pipe for lifecycle operations:
+    /// Describe/Pause/Resume/Drop.</summary>
+    public Pipe Pipe(string name) => new(this, name);
+
+    /// <summary><c>SHOW PIPES</c>: the catalog of declared Pipes.</summary>
+    public async Task<IReadOnlyList<PipeInfo>> PipesAsync(CancellationToken ct = default)
+    {
+        var execution = await CommandsAsync(
+            new JsonObject[] { new() { ["command"] = "show", ["kind"] = "pipes" } },
+            ct: ct).ConfigureAwait(false);
+        var data = execution.Results.Count > 0 ? execution.Results[0].Data : null;
+        return Operations.DecodePipes(data);
+    }
+
+    // ---- Index queries ----------------------------------------------------------
+
+    /// <summary>Query a replicated Index by predicate — exact, prefix, or
+    /// range over typed values. <paramref name="strict"/> waits for the
+    /// committed target rather than answering stale.</summary>
+    public async Task<IndexPage> QueryIndexAsync(
+        string index,
+        IndexPredicate predicate,
+        int? limit = null,
+        bool strict = false,
+        CancellationToken ct = default)
+    {
+        var body = predicate.WireFields();
+        body["index"] = Dotted(index);
+        body["strict"] = strict;
+        if (limit is { } bounded)
+        {
+            body["limit"] = bounded;
+        }
+        return Operations.DecodeIndexPage(
+            await _transport.PostAsync("/v1/indexes/query", body, ct)
+                .ConfigureAwait(false));
+    }
+
+    // ---- Demand observability ------------------------------------------------------
+
+    private async Task<DemandReport> DemandAsync(
+        string surface, string resourceKey, string nameField, CancellationToken ct)
+        => Operations.DecodeDemandReport(
+            await _transport.GetAsync($"/v1/admin/demand/{surface}", ct)
+                .ConfigureAwait(false),
+            resourceKey, nameField);
+
+    /// <summary><c>GET /v1/admin/demand/feeds</c> — per-Feed append/read
+    /// attribution plus per-domain rollups.</summary>
+    public Task<DemandReport> DemandFeedsAsync(CancellationToken ct = default)
+        => DemandAsync("feeds", "feeds", "feed", ct);
+
+    /// <summary><c>GET /v1/admin/demand/readers</c> — per-Reader
+    /// request/fetch/ack counters.</summary>
+    public Task<DemandReport> DemandReadersAsync(CancellationToken ct = default)
+        => DemandAsync("readers", "readers", "reader", ct);
+
+    /// <summary><c>GET /v1/admin/demand/subscriptions</c> —
+    /// per-Subscription counters.</summary>
+    public Task<DemandReport> DemandSubscriptionsAsync(CancellationToken ct = default)
+        => DemandAsync("subscriptions", "subscriptions", "subscription", ct);
+
+    /// <summary><c>GET /v1/admin/demand/indexes</c> — per-Index query
+    /// counters.</summary>
+    public Task<DemandReport> DemandIndexesAsync(CancellationToken ct = default)
+        => DemandAsync("indexes", "indexes", "index", ct);
+
+    /// <summary><c>GET /v1/admin/demand/pipes</c> — per-Pipe
+    /// drive/apply/failure counters.</summary>
+    public Task<DemandReport> DemandPipesAsync(CancellationToken ct = default)
+        => DemandAsync("pipes", "pipes", "pipe", ct);
+
+    /// <summary><c>GET /v1/admin/demand/hot-keys</c> — dominant-Key
+    /// evidence across Feeds. A strictly ordered hot Key is never
+    /// parallelized: the honest signal is to spread or shed load.</summary>
+    public async Task<IReadOnlyList<HotKey>> HotKeysAsync(CancellationToken ct = default)
+        => Operations.DecodeHotKeys(
+            await _transport.GetAsync("/v1/admin/demand/hot-keys", ct)
+                .ConfigureAwait(false));
+
     // ---- Resource management -------------------------------------------------
     // Typed convenience over <see cref="WclAsync(string, CancellationToken)"/>:
     // each method builds one WCL statement and executes it. Names are

@@ -154,6 +154,41 @@ catch (WhitewaterException.Conflict)       { /* fencing/conflict; inspect Code *
 catch (WhitewaterException.Refused)        { /* request rejected; fix and retry */ }
 ```
 
+### Pipes, indexes, and operations
+
+Managed Pipes and replicated Indexes share the same topology-free model
+— names, never partitions or Nodes:
+
+```csharp
+// Pipe lifecycle: describe, pause, resume, drop.
+var pipe = client.Pipe("orders.relay");
+var info = await pipe.DescribeAsync();   // stage, operation, outputs, status
+await pipe.PauseAsync(); await pipe.ResumeAsync(); await pipe.DropAsync();
+var pipes = await client.PipesAsync();   // the declared catalog
+
+// Index queries: exact, prefix, or range predicates over typed values.
+var page = await client.QueryIndexAsync(
+    "crm.byregion",
+    IndexPredicate.Range(
+        new object?[] { "emea" },
+        IndexBound.InclusiveBound(0L), IndexBound.ExclusiveBound(99L)),
+    limit: 50, strict: true);
+foreach (var row in page.Rows) { /* row.Key / row.Payload bytes */ }
+
+// Demand observability: typed rows + per-domain rollups.
+var report = await client.DemandFeedsAsync();
+var appended = report.Rows[0].Counter("appended_records");
+await client.DemandReadersAsync(); await client.DemandSubscriptionsAsync();
+await client.DemandIndexesAsync(); await client.DemandPipesAsync();
+var hot = await client.HotKeysAsync(); // dominant-key evidence per feed
+```
+
+Pipe operation payloads (`PipeInfo.Operation`) and demand fields
+(`DemandRow.Fields`, `HotKey.Evidence`) stay opaque JSON so server-side
+variants evolve without an SDK bump. `QueryIndexAsync` values accept the
+same typed scalars as StateStore named values — floats are refused
+because the wire carries exact `i64`/`text`/`bytes`.
+
 ## Contract parity
 
 This SDK implements the versioned wire contract in
