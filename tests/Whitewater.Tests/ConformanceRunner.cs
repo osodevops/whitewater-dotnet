@@ -26,7 +26,7 @@ public class ConformanceRunner
     [Fact]
     public async Task SharedScenariosPassAgainstTheRiverbed()
     {
-        if (BaseUrls == null || FixtureDir == null)
+        if (string.IsNullOrWhiteSpace(BaseUrls) || string.IsNullOrWhiteSpace(FixtureDir))
         {
             return;
         }

@@ -20,8 +20,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ matrix.dotnet }}
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       - name: Restore
         run: dotnet restore Whitewater.sln
@@ -57,7 +55,11 @@ jobs:
 
       - run: dotnet build Whitewater.sln -c Release
 
+      # Repository variables expand to an empty string when unset, which
+      # would make the runner take the live path and fail; the step only
+      # runs when the conformance Riverbed is provisioned.
       - name: Conformance suite (skipped without endpoints)
+        if: vars.WHITEWATER_CONFORMANCE_URLS != ''
         run: >-
           dotnet test Whitewater.sln -c Release
           --filter "FullyQualifiedName~ConformanceRunner"

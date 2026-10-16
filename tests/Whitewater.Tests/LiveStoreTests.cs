@@ -22,7 +22,7 @@ public class LiveStoreTests
     [Fact]
     public async Task DeclaresAndExercisesAServerSideStateStore()
     {
-        if (Endpoints is null)
+        if (string.IsNullOrWhiteSpace(Endpoints))
         {
             return; // env-gated: no Riverbed configured
         }
