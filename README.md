@@ -22,13 +22,60 @@ implementation details — cursors are opaque tokens, never parsed.
 
 ## Usage
 
+### Typed feeds and stores — codecs do the serialization
+
+Bind a feed or store to codecs once; application code then works in its
+own types — never `Encoding.UTF8`/`JsonSerializer` on every call:
+
 ```csharp
 using Whitewater;
+
+public sealed record Order(string Id, int Total);
 
 var client = new WhitewaterClient(
     apiKey: "...",
     endpoints: new[] { new Uri("https://node1:7070"), new Uri("https://node2:7070") });
 
+// UTF-8 keys + JSON payloads (one codec types the payload; two bind
+// key and payload explicitly).
+var orders = client.Feed("shop.orders", Codecs.Json<Order>());
+
+var writer = await orders.WriterAsync("ingest");   // declares + opens session
+await writer.AppendAsync("order-42", new Order("order-42", 99));
+await writer.AppendEventAsync(new FeedEvent<string, Order>(
+    order, "order-42", requestId: Guid.NewGuid(),
+    metadata: Codecs.TextMetadata(new() { ["source"] = "api" })));
+
+await using var reader = await orders.ReaderAsync("audit", capacity: 64);
+var page = await reader.FetchAsync();
+foreach (var m in page.Records) Console.WriteLine($"{m.Key} {m.Value.Total}");
+await reader.AckAsync();
+
+var profiles = client.Store("accounts.employees", Codecs.Json<Profile>());
+await profiles.PutAsync("user-1", profile,
+    new Dictionary<string, object?> { ["passport"] = "P111" });
+var row = await profiles.GetAsync("user-1");        // row.Value is Profile
+await foreach (var r in profiles.IterateAsync()) Export(r);
+```
+
+```csharp
+Codecs.Utf8            // UTF-8 text (JSON/XML/etc. as strings)
+Codecs.Bytes           // raw byte[] identity
+Codecs.Json<T>()       // System.Text.Json — web defaults (camelCase)
+Codecs.For<T>()        // infers: string→UTF-8, byte[]→raw, else JSON
+Codecs.Custom<T>(e,d)  // protobuf, msgpack, application framing
+Codecs.TextMetadata(m) // text Metadata map -> wire bytes
+```
+
+`client.Feed(name)` binds the default `Feed<string, byte[]>`;
+`feed.View(kc, vc)` and `store.View(...)` rebind codecs without a wire
+call.
+
+### Wire-level API
+
+The raw `byte[]` API stays available for full control:
+
+```csharp
 // Provision a Domain, Feed, Writer, and session — either typed
 // (each method builds its WCL statement for you):
 await client.CreateDomainAsync("shop");

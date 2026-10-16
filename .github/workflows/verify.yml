@@ -1,0 +1,67 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: .NET ${{ matrix.dotnet }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        dotnet: ['8.0.x']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ matrix.dotnet }}
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Restore
+        run: dotnet restore Whitewater.sln
+
+      - name: Build
+        run: dotnet build Whitewater.sln --no-restore -c Release
+
+      - name: Unit tests
+        run: >-
+          dotnet test Whitewater.sln --no-build -c Release
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory TestResults
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-net${{ matrix.dotnet }}
+          path: TestResults
+          retention-days: 7
+
+  conformance:
+    name: live conformance (three-node Riverbed)
+    runs-on: ubuntu-latest
+    # Only runs when the conformance Riverbed is provisioned via
+    # repository variables; skips cleanly otherwise.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - run: dotnet build Whitewater.sln -c Release
+
+      - name: Conformance suite (skipped without endpoints)
+        run: >-
+          dotnet test Whitewater.sln -c Release
+          --filter "FullyQualifiedName~ConformanceRunner"
+        env:
+          WHITEWATER_CONFORMANCE_URLS: ${{ vars.WHITEWATER_CONFORMANCE_URLS }}
+          WHITEWATER_FIXTURE_DIR: ${{ vars.WHITEWATER_FIXTURE_DIR }}
+          FINNSTREAM_ADMIN_API_KEY: ${{ vars.FINNSTREAM_ADMIN_API_KEY }}

@@ -301,6 +301,53 @@ public sealed class WhitewaterClient
         => new(this, reader, feed, start, SubscribeCapacity, onRecords, onError);
 
     /// <summary>
+    /// A codec-bound Feed facade — serialization is bound once so every
+    /// write encodes and every read decodes automatically:
+    /// <code>
+    /// var orders = client.Feed("orders.events", Codecs.Json&lt;Order&gt;());
+    /// var writer = await orders.WriterAsync("ingest");   // declares + opens
+    /// await writer.AppendAsync("order-1", order);        // JSON-encoded
+    /// </code>
+    /// <paramref name="valueCodec"/> keeps UTF-8 keys (the common case);
+    /// the two-codec overload binds both explicitly — protobuf/msgpack/
+    /// custom via <see cref="Codecs.Custom{T}"/>.
+    /// </summary>
+    public Feed<string, TValue> Feed<TValue>(string name, ICodec<TValue> valueCodec)
+        => new(this, DottedName(name), Codecs.Utf8, valueCodec);
+
+    /// <inheritdoc cref="Feed{TValue}(string, ICodec{TValue})"/>
+    public Feed<TKey, TValue> Feed<TKey, TValue>(
+        string name, ICodec<TKey> keyCodec, ICodec<TValue> valueCodec)
+        => new(this, DottedName(name), keyCodec, valueCodec);
+
+    /// <summary>The default binding — UTF-8 string keys and untouched
+    /// payload bytes, the escape hatch to the wire.</summary>
+    public Feed<string, byte[]> Feed(string name)
+        => new(this, DottedName(name), Codecs.Utf8, Codecs.Bytes);
+
+    /// <summary>
+    /// A codec-bound StateStore facade — every `Get`/`Put`/`Iterate`
+    /// serializes through the bound codecs. The byte-level
+    /// <see cref="StateStore(string)"/> facade remains for raw access
+    /// and declaration.
+    /// </summary>
+    public Store<string, TValue> Store<TValue>(string name, ICodec<TValue> valueCodec)
+        => Whitewater.Store<string, TValue>.Bind(
+            Whitewater.StateStore.Bound(_transport, name), Codecs.Utf8, valueCodec);
+
+    /// <inheritdoc cref="Store{TValue}(string, ICodec{TValue})"/>
+    public Store<TKey, TValue> Store<TKey, TValue>(
+        string name, ICodec<TKey> keyCodec, ICodec<TValue> valueCodec)
+        => Whitewater.Store<TKey, TValue>.Bind(
+            Whitewater.StateStore.Bound(_transport, name), keyCodec, valueCodec);
+
+    /// <summary>The default binding — UTF-8 keys and untouched payload
+    /// bytes.</summary>
+    public Store<string, byte[]> Store(string name)
+        => Whitewater.Store<string, byte[]>.Bind(
+            Whitewater.StateStore.Bound(_transport, name), Codecs.Utf8, Codecs.Bytes);
+
+    /// <summary>
     /// A thin facade over the node-side StateStore <paramref name="name"/> —
     /// rows live on the Nodes (RF3 + Fjall); this client holds no state.
     /// </summary>

@@ -19,6 +19,9 @@ public sealed class WriterSessionClient
         _compression = compression;
     }
 
+    /// <summary>The session's fencing epoch.</summary>
+    public long SessionEpoch => _sessionEpoch;
+
     public WriterSessionClient UseCompression(bool enabled = true) =>
         new(_transport, _writer, _sessionEpoch, enabled);
 
