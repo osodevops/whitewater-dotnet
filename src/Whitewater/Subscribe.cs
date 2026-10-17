@@ -83,8 +83,11 @@ public sealed class Subscription : IAsyncDisposable
                             await onRecords(page.Records).ConfigureAwait(false);
                             if (page.DeliveredCursor.HasValue)
                             {
+                                // The stop token may already be cancelled —
+                                // DisposeAsync waits for this page, so its ack
+                                // must still reach the Node (graceful drain).
                                 session = await reader
-                                    .AckAsync(session, page.DeliveredCursor.Value, ct: ct)
+                                    .AckAsync(session, page.DeliveredCursor.Value)
                                     .ConfigureAwait(false);
                             }
                         }

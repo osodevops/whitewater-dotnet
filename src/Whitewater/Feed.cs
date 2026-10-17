@@ -349,8 +349,40 @@ public sealed class Feed<TKey, TValue>
         ReaderStart start,
         Func<IReadOnlyList<FeedMessage<TKey, TValue>>, Task> onRecords,
         Action<WhitewaterException>? onError = null)
+        => SubscribeDecoded(reader, start, null, onRecords, onError);
+
+    /// <summary>Decoded subscribe with capacity override — the
+    /// FeedConsumer seam.</summary>
+    internal Subscription SubscribeDecoded(
+        string reader,
+        ReaderStart start,
+        int? capacity,
+        Func<IReadOnlyList<FeedMessage<TKey, TValue>>, Task> onRecords,
+        Action<WhitewaterException>? onError = null)
         => _client.Subscribe(reader, Name, start,
-            records => onRecords(DecodeMessages(records)), onError);
+            records => onRecords(DecodeMessages(records)), onError,
+            capacity ?? 128);
+
+    /// <summary>A permanent, supervised consumer bound to this Feed's
+    /// named Reader — iterate decoded records via
+    /// <see cref="FeedConsumer{TKey, TValue}.Messages"/> or
+    /// <see cref="FeedConsumer{TKey, TValue}.RunAsync(Func{FeedMessage{TKey, TValue}, ValueTask}, CancellationToken)"/>
+    /// a handler; open/fetch/ack/reopen/backoff stay internal.</summary>
+    public FeedConsumer<TKey, TValue> Consumer(string reader)
+        => new(this, reader);
+
+    /// <summary>Convenience for
+    /// <c>Consumer(reader).Messages(ct)</c> — the one-line permanent
+    /// loop:</summary>
+    /// <code>
+    /// await foreach (var msg in feed.ConsumeAsync("enricher", ct))
+    /// {
+    ///     await ProcessAsync(msg);
+    /// }
+    /// </code>
+    public IAsyncEnumerable<FeedMessage<TKey, TValue>> ConsumeAsync(
+        string reader, CancellationToken ct = default)
+        => Consumer(reader).Messages(ct);
 
     internal static IReadOnlyList<FeedMessage<TKey, TValue>> DecodeMessages(
         IReadOnlyList<FeedRecord> records, ICodec<TKey> keyCodec, ICodec<TValue> valueCodec)

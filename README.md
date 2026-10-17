@@ -58,6 +58,15 @@ var row = await profiles.GetAsync("user-1");        // row.Value is Profile
 await foreach (var r in profiles.IterateAsync()) Export(r);
 ```
 
+Value-level lookups skip the row wrapper when freshness doesn't matter —
+`Find*` returns the decoded value or null:
+
+```csharp
+var profile = await profiles.FindAsync("user-1")
+    ?? await profiles.FindByAsync("passport", "P111");   // named key, first hit
+var n = await counters.GetOrDefaultAsync("hits", 0);     // counters stay one line
+```
+
 ```csharp
 Codecs.Utf8            // UTF-8 text (JSON/XML/etc. as strings)
 Codecs.Bytes           // raw byte[] identity
@@ -125,6 +134,46 @@ await using var sub = client.Subscribe("hr-view", "hr.employees",
     batch => { Export(batch); return Task.CompletedTask; },
     error => Console.Error.WriteLine($"subscription ended: {error}"));
 ```
+
+### Permanent consumer: `feed.Consumer()` — supervision inside
+
+For the Kafka-style "consume forever" loop, `Consumer(reader)` wraps
+`Subscribe` with a supervisor — reconnects, retry backoff, session
+re-open on fencing, and graceful drain are all internal. Application
+code only sees decoded records, one at a time:
+
+```csharp
+var feed = client.Feed("users.update.request", Codecs.Json<UpdateRequest>());
+
+await foreach (var msg in feed.ConsumeAsync("enricher", stoppingToken))
+{
+    await ProcessAsync(msg);         // throw -> the page stays unacked
+}                                   //          and redelivers (at-least-once)
+
+// Or a handler form that completes only on DisposeAsync / ct:
+await feed.Consumer("enricher")
+    .StartAt(ReaderStart.Beginning())        // first declaration only
+    .WithBackoff(TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(30))
+    .OnError(e => log.LogWarning(e, "consumer restarted"))
+    .RunAsync(ProcessAsync, stoppingToken);
+```
+
+- The named Reader's acknowledged cursor is durable server-side — a
+  service restart resumes where it stopped; no offset management.
+- Each fetched page is delivered record-by-record; its delivered cursor
+  acks only after every record delivered cleanly. A thrown handler (or
+  an abandoned `await foreach`) leaves the page unacked, so it
+  redelivers — route poison pills to a DLQ feed yourself.
+- Transient failures (`Unavailable`, `AmbiguousResult`) retry with
+  exponential backoff; a fenced session re-opens and resumes. Startup
+  refusals (`Refused`, invalid names, auth) surface on
+  `RunAsync`/`Messages` — fail fast, never loop.
+- `await DisposeAsync()` (or the cancellation token) finishes the
+  in-flight page, acks it, releases the session — the SIGTERM path.
+  It is safe to call from inside a handler.
+
+See [examples/EnrichUsers](examples/EnrichUsers/Program.cs) for the full
+enrichment service — primary/named-key store lookups, DLQ, counters.
 
 ### Server-side StateStores
 

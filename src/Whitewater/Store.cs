@@ -122,6 +122,46 @@ public sealed class Store<TKey, TValue>
             DecodeRows(result.Rows), result.Freshness);
     }
 
+    /// <summary>Value-only primary lookup: the decoded value or null
+    /// when the key is absent. <see cref="GetAsync"/> remains for the
+    /// row's freshness/applied-cursor evidence.</summary>
+    public async Task<TValue?> FindAsync(
+        TKey key,
+        bool strict = false,
+        int? waitMs = null,
+        CancellationToken ct = default)
+    {
+        var row = await GetAsync(key, strict, waitMs, ct).ConfigureAwait(false);
+        return row is null ? default : row.Value;
+    }
+
+    /// <summary>Value-only named-key lookup: the first matching row's
+    /// decoded value or null on no match. <see cref="GetByAsync"/>
+    /// remains for every match plus freshness evidence.</summary>
+    public async Task<TValue?> FindByAsync(
+        string namedKey,
+        object? value,
+        bool strict = false,
+        int? waitMs = null,
+        CancellationToken ct = default)
+    {
+        var rows = await GetByAsync(namedKey, value, 1, strict, waitMs, ct)
+            .ConfigureAwait(false);
+        return rows.Rows.Count == 0 ? default : rows.Rows[0].Value;
+    }
+
+    /// <summary>Primary lookup returning <paramref name="fallback"/>
+    /// when the key is absent — counters and flags become one
+    /// line.</summary>
+    public async Task<TValue> GetOrDefaultAsync(
+        TKey key,
+        TValue fallback,
+        CancellationToken ct = default)
+    {
+        var value = await FindAsync(key, ct: ct).ConfigureAwait(false);
+        return value is null ? fallback : value;
+    }
+
     /// <summary>Remove the row and its named postings.</summary>
     public Task<MutationResult> DeleteAsync(
         TKey key, Guid? mutationId = null, CancellationToken ct = default)
