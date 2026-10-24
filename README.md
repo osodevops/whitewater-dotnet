@@ -209,6 +209,26 @@ Managed Pipes and replicated Indexes share the same topology-free model
 — names, never partitions or Nodes:
 
 ```csharp
+// Pipe declaration: the client names the business key, source and
+// outputs — the server owns panes, leases and the effect journal.
+await client.DefineForwardPipeAsync("orders.relay", "orders-sub",
+    "orders.relayed");
+await client.DefineEnrichPipeAsync("orders.enrich", "orders-sub",
+    "orders.enriched", "crm.customers",
+    PipeOperation.Enrich(Extractor.RecordKey(),
+        freshness: EnrichFreshness.Latest,
+        onMiss: EnrichMiss.Quarantine),
+    quarantineFeed: "orders.enrich-dlq");
+await client.DefineWindowPipeAsync("orders.hourly", "orders-sub",
+    "stats.orders-hourly",
+    PipeOperation.Window(3_600_000_000_000UL,  // window_ns: 1h
+        Extractor.RecordKey(), WindowAggregation.Count(),
+        time: WindowTime.Event,
+        watermarkNs: 300_000_000_000UL,  // 5m horizon
+        graceNs: 30_000_000_000UL,       // 30s late revisions
+        expireNs: 7_200_000_000_000UL),
+    emitFeed: "orders.hourly-emitted");
+
 // Pipe lifecycle: describe, pause, resume, drop.
 var pipe = client.Pipe("orders.relay");
 var info = await pipe.DescribeAsync();   // stage, operation, outputs, status

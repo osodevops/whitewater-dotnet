@@ -88,6 +88,93 @@ public sealed class WhitewaterClient
         return Operations.DecodePipes(data);
     }
 
+    /// <summary><c>DEFINE PIPE &lt;name&gt; FROM &lt;subscription&gt; TO FEED
+    /// &lt;outputFeed&gt;</c> — the copy Pipe.</summary>
+    public Task<ControlExecution> DefineForwardPipeAsync(
+        string name, string subscription, string outputFeed, CancellationToken ct = default)
+        => CommandsAsync(
+            new JsonObject[]
+            {
+                new()
+                {
+                    ["command"] = "define_pipe",
+                    ["name"] = Dotted(name),
+                    ["subscription"] = Dotted(subscription),
+                    ["output_feed"] = Dotted(outputFeed),
+                    ["operation"] = PipeOperation.Forward().ToWire(),
+                },
+            }, ct: ct);
+
+    /// <summary><c>DEFINE PIPE … ENRICH FROM &lt;store&gt;</c> — point-lookup
+    /// enrichment; <paramref name="quarantineFeed"/> resolves the
+    /// miss-quarantine target when the operation's miss disposition is
+    /// <see cref="EnrichMiss.Quarantine"/>.</summary>
+    public async Task<ControlExecution> DefineEnrichPipeAsync(
+        string name,
+        string subscription,
+        string outputFeed,
+        string store,
+        PipeOperation operation,
+        string? quarantineFeed = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (operation.Operation != "enrich")
+        {
+            throw new ArgumentException(
+                "enrich pipes take PipeOperation.Enrich(...)", nameof(operation));
+        }
+        var command = new JsonObject
+        {
+            ["command"] = "define_pipe",
+            ["name"] = Dotted(name),
+            ["subscription"] = Dotted(subscription),
+            ["output_feed"] = Dotted(outputFeed),
+            ["output_store"] = Dotted(store),
+        };
+        if (quarantineFeed != null)
+        {
+            command["quarantine_feed"] = Dotted(quarantineFeed);
+        }
+        command["operation"] = operation.ToWire();
+        return await CommandsAsync(new JsonObject[] { command }, ct: ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary><c>DEFINE PIPE … TO STATESTORE &lt;store&gt;</c> —
+    /// rolling-window aggregation; <paramref name="emitFeed"/> optionally
+    /// emits closed panes and requires the operation declare a lateness
+    /// bound (<c>max_late_ns</c> or <c>watermark_ns</c>).</summary>
+    public async Task<ControlExecution> DefineWindowPipeAsync(
+        string name,
+        string subscription,
+        string outputStore,
+        PipeOperation operation,
+        string? emitFeed = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (operation.Operation != "window")
+        {
+            throw new ArgumentException(
+                "window pipes take PipeOperation.Window(...)", nameof(operation));
+        }
+        var command = new JsonObject
+        {
+            ["command"] = "define_pipe",
+            ["name"] = Dotted(name),
+            ["subscription"] = Dotted(subscription),
+            ["output_store"] = Dotted(outputStore),
+        };
+        if (emitFeed != null)
+        {
+            command["emit_feed"] = Dotted(emitFeed);
+        }
+        command["operation"] = operation.ToWire();
+        return await CommandsAsync(new JsonObject[] { command }, ct: ct)
+            .ConfigureAwait(false);
+    }
+
     // ---- Index queries ----------------------------------------------------------
 
     /// <summary>Query a replicated Index by predicate — exact, prefix, or

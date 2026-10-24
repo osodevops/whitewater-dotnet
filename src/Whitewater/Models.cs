@@ -198,7 +198,7 @@ public sealed record Extractor
     }
 
     /// <summary>Serialize to the wire IndexFieldSpec object.</summary>
-    internal JsonObject ToWire()
+    public JsonObject ToWire()
     {
         var node = new JsonObject { ["kind"] = Kind };
         if (Name != null) node["name"] = Name;

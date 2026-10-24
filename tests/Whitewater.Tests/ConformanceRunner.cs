@@ -1,7 +1,9 @@
+using System.Diagnostics;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Whitewater;
-using Whitewater.Internal;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace Whitewater.Tests;
@@ -9,601 +11,876 @@ namespace Whitewater.Tests;
 /// <summary>
 /// Executes the shared fixture corpus under sdk/spec/conformance/ in
 /// whitewater against a live Riverbed, per the fixture vocabulary in
-/// conformance/README.md. Set WHITEWATER_CONFORMANCE_URLS
-/// (comma-separated Node base URLs) and WHITEWATER_FIXTURE_DIR; skipped
-/// otherwise. The admin key comes from FINNSTREAM_ADMIN_API_KEY with the
-/// documented development default.
+/// conformance/README.md. Enabled when the endpoint set and the corpus
+/// directory are configured:
+///
+///   WHITEWATER_ENDPOINTS=http://localhost:7071,...   (or the legacy
+///     WHITEWATER_CONFORMANCE_URLS)
+///   WHITEWATER_SPEC_DIR=.../whitewater/sdk/spec/conformance
+///     (or the legacy WHITEWATER_FIXTURE_DIR)
+///
+/// WHITEWATER_API_KEY (legacy FINNSTREAM_ADMIN_API_KEY) defaults to the
+/// local development key. WHITEWATER_CHAOS_CMD names the environment's
+/// fault driver; without it chaos.* steps report unsupported rather
+/// than skipping. A scenario whose op this SDK cannot express fails
+/// explicitly rather than silently skipping — a spec-required signal.
+///
+/// Steps dispatch at the wire surface so expect asserts the same
+/// (status, body) contract every language runner implements: poll
+/// windows re-dispatch asynchronous steps until expectations settle,
+/// while a separate transient budget rides out transport errors and
+/// 5xx unavailability without spending poll attempts.
 /// </summary>
 public class ConformanceRunner
 {
-    private static readonly string? BaseUrls = Environment.GetEnvironmentVariable(
-        "WHITEWATER_CONFORMANCE_URLS");
-    private static readonly string? FixtureDir = Environment.GetEnvironmentVariable(
-        "WHITEWATER_FIXTURE_DIR");
-    private static readonly string ApiKey = Environment.GetEnvironmentVariable(
-        "FINNSTREAM_ADMIN_API_KEY") ?? "whitewater-local-development-admin-key";
+    private static readonly string? BaseUrls =
+        Environment.GetEnvironmentVariable("WHITEWATER_ENDPOINTS")
+        ?? Environment.GetEnvironmentVariable("WHITEWATER_CONFORMANCE_URLS");
+    private static readonly string? FixtureDir =
+        Environment.GetEnvironmentVariable("WHITEWATER_SPEC_DIR")
+        ?? Environment.GetEnvironmentVariable("WHITEWATER_FIXTURE_DIR");
+    private static readonly string ApiKey =
+        Environment.GetEnvironmentVariable("WHITEWATER_API_KEY")
+        ?? Environment.GetEnvironmentVariable("FINNSTREAM_ADMIN_API_KEY")
+        ?? "whitewater-local-development-admin-key";
+    private static readonly string ChaosCmd =
+        Environment.GetEnvironmentVariable("WHITEWATER_CHAOS_CMD") ?? "";
+
+    private const int TransientAttempts = 120;
+    private static readonly TimeSpan TransientInterval = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>The shared op vocabulary onto the wire surface.</summary>
+    private static readonly Dictionary<string, (string Method, string Path)> WireEndpoints = new()
+    {
+        ["wcl"] = ("POST", "/v1/admin/wcl"),
+        ["admin.wcl"] = ("POST", "/v1/admin/wcl"),
+        ["admin.commands"] = ("POST", "/v1/admin/commands"),
+        ["writer.append"] = ("POST", "/v1/writers/append"),
+        ["writer.append_batch"] = ("POST", "/v1/writers/append-batch"),
+        ["reader.open"] = ("POST", "/v1/readers/open"),
+        ["reader.fetch"] = ("POST", "/v1/readers/fetch"),
+        ["reader.ack"] = ("POST", "/v1/readers/ack"),
+        ["reader.close"] = ("POST", "/v1/readers/close"),
+        ["reader.temporary_fetch"] = ("POST", "/v1/readers/temporary/fetch"),
+        ["feed.append"] = ("POST", "/v1/feeds/append"),
+        ["member.join"] = ("POST", "/v1/subscriptions/members/join"),
+        ["member.claim"] = ("POST", "/v1/subscriptions/members/claim"),
+        ["member.renew"] = ("POST", "/v1/subscriptions/members/renew"),
+        ["member.release"] = ("POST", "/v1/subscriptions/members/release"),
+        ["member.transfer"] = ("POST", "/v1/subscriptions/members/transfer"),
+        ["member.fetch"] = ("POST", "/v1/subscriptions/members/fetch"),
+        ["member.ack"] = ("POST", "/v1/subscriptions/members/ack"),
+        ["subscription.seek"] = ("POST", "/v1/subscriptions/seek"),
+        ["statestore.lookup"] = ("POST", "/v1/state-stores/lookup"),
+        ["statestore.get_by"] = ("POST", "/v1/state-stores/get-by"),
+        ["statestore.iterate"] = ("POST", "/v1/state-stores/iterate"),
+        ["statestore.clear"] = ("POST", "/v1/state-stores/clear"),
+    };
+
+    private sealed class TransportException : Exception
+    {
+        public TransportException(string message, Exception inner)
+            : base(message, inner) { }
+    }
+
+    /// <summary>Status-preserving JSON-over-HTTP calls; non-2xx replies
+    /// return the parsed body so expect asserts error_status/error_code
+    /// against it.</summary>
+    private sealed class Wire : IDisposable
+    {
+        private readonly Uri[] _endpoints;
+        private readonly string _apiKey;
+        private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+        private int _next;
+
+        public Wire(Uri[] endpoints, string apiKey)
+        {
+            _endpoints = endpoints;
+            _apiKey = apiKey;
+        }
+
+        public async Task<(int Status, JsonNode? Body)> RequestAsync(
+            string method, string path, JsonNode? body)
+        {
+            var baseUri = _endpoints[_next];
+            _next = (_next + 1) % _endpoints.Length;
+            using var request = new HttpRequestMessage(
+                new HttpMethod(method), new Uri(baseUri, path));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+            request.Headers.Accept.ParseAdd("application/json");
+            if (body != null)
+            {
+                request.Content = new StringContent(
+                    body.ToJsonString(), Encoding.UTF8, "application/json");
+            }
+            HttpResponseMessage response;
+            try
+            {
+                response = await _http.SendAsync(request);
+            }
+            catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+            {
+                throw new TransportException($"Node unreachable: {error.Message}", error);
+            }
+            var text = await response.Content.ReadAsStringAsync();
+            JsonNode? parsed = null;
+            if (text.Length > 0)
+            {
+                try
+                {
+                    parsed = JsonNode.Parse(text);
+                }
+                catch (JsonException)
+                {
+                    parsed = null;
+                }
+            }
+            return ((int)response.StatusCode, parsed);
+        }
+
+        public void Dispose() => _http.Dispose();
+    }
 
     [Fact]
     public async Task SharedScenariosPassAgainstTheRiverbed()
     {
-        if (string.IsNullOrWhiteSpace(BaseUrls) || string.IsNullOrWhiteSpace(FixtureDir))
+        if (string.IsNullOrWhiteSpace(BaseUrls)
+            || string.IsNullOrWhiteSpace(FixtureDir)
+            || !Directory.Exists(FixtureDir))
         {
             return;
         }
-        var endpoints = BaseUrls.Split(',').Select(raw => new Uri(raw.Trim())).ToArray();
+        var endpoints = BaseUrls.Split(',')
+            .Select(raw => new Uri(raw.Trim().TrimEnd('/') + "/")).ToArray();
         var files = Directory.GetFiles(FixtureDir, "*.json").OrderBy(f => f).ToArray();
         Assert.NotEmpty(files);
         foreach (var file in files)
         {
             var scenario = JsonNode.Parse(await File.ReadAllTextAsync(file))!;
             var apiKey = scenario["api_key"]?.GetValue<string>() ?? ApiKey;
-            var client = new WhitewaterClient(apiKey, endpoints, TimeSpan.FromSeconds(30));
-            await RunScenario(client, scenario);
+            using var wire = new Wire(endpoints, apiKey);
+            await new Runner(wire, ChaosCmd).RunAsync(
+                Path.GetFileName(file), scenario);
         }
     }
 
-    private static async Task RunScenario(WhitewaterClient client, JsonNode scenario)
+    private sealed class Runner
     {
-        var name = scenario["scenario"]!.GetValue<string>();
-        var context = new ScenarioContext();
-        var steps = scenario["steps"] as JsonArray
-            ?? throw new InvalidOperationException($"{name}: no steps");
-        var index = 0;
-        foreach (var stepNode in steps)
+        private static readonly Regex TokenPattern = new(@"\{\{(.*?)\}\}",
+            RegexOptions.Compiled);
+        private static readonly Regex WholeTokenPattern = new(@"^\{\{(.*?)\}\}$",
+            RegexOptions.Compiled);
+
+        private readonly Wire _wire;
+        private readonly string _chaosCmd;
+        private readonly Dictionary<string, JsonNode?> _bound = new();
+        private readonly Dictionary<string, string> _namedUuids = new();
+        private readonly string _uniq =
+            $"u{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}{Random.Shared.Next(0, 0xFFFFFF):x6}";
+
+        public Runner(Wire wire, string chaosCmd)
         {
-            var step = stepNode!.AsObject();
-            var op = step["op"]!.GetValue<string>();
-            index += 1;
-            var expect = step["expect"] as JsonObject;
-            var errorCode = expect?["error_code"]?.GetValue<string>();
-            var errorStatus = expect?["error_status"]?.GetValue<int>();
-            var expectsError = errorCode != null || errorStatus != null;
-            JsonNode? result;
-            try
+            _wire = wire;
+            _chaosCmd = chaosCmd;
+        }
+
+        // ---- substitution ----
+
+        private JsonNode? ResolveNode(string token)
+        {
+            token = token.Trim();
+            if (token == "uniq")
             {
-                result = await Call(client, Substitute(step, context));
-                if (expectsError)
+                return JsonValue.Create(_uniq);
+            }
+            if (token == "uuid")
+            {
+                return JsonValue.Create(Guid.NewGuid().ToString());
+            }
+            if (token.StartsWith("uuid:"))
+            {
+                var name = token[5..];
+                if (!_namedUuids.TryGetValue(name, out var id))
                 {
-                    throw new InvalidOperationException(
-                        $"{name}: step {index} ({op}) succeeded but expected " +
-                        $"error {expect?.ToJsonString()}");
+                    id = Guid.NewGuid().ToString();
+                    _namedUuids[name] = id;
+                }
+                return JsonValue.Create(id);
+            }
+            if (token == "now_ns" || token.StartsWith("now_ns:"))
+            {
+                // Wall-clock epoch nanoseconds as a decimal string; an
+                // optional signed offset shifts the instant.
+                long shift = token.StartsWith("now_ns:")
+                    ? long.Parse(token[7..])
+                    : 0;
+                var nanos = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L + shift;
+                return JsonValue.Create(nanos.ToString());
+            }
+            var dot = token.IndexOf('.');
+            if (dot > 0
+                && _bound.TryGetValue(token[..dot], out var bound)
+                && bound != null)
+            {
+                var value = Dig(bound, token[(dot + 1)..]);
+                if (value != null)
+                {
+                    return value.DeepClone();
                 }
             }
-            catch (WhitewaterException error) when (expectsError)
+            throw new InvalidOperationException(
+                $"unresolved fixture token {{{{{token}}}}}");
+        }
+
+        private JsonNode? Substitute(JsonNode? node)
+        {
+            switch (node)
             {
-                if (errorCode != null && error.Code != errorCode)
+                case JsonObject obj:
                 {
-                    throw new InvalidOperationException(
-                        $"{name}: step {index} ({op}) failed with " +
-                        $"{error.Code ?? error.GetType().Name}, expected error_code {errorCode}");
+                    var copy = new JsonObject();
+                    foreach (var entry in obj)
+                    {
+                        copy[entry.Key] = entry.Value == null
+                            ? null
+                            : Substitute(entry.Value);
+                    }
+                    return copy;
                 }
-                if (errorStatus != null && error.Status != errorStatus.Value)
+                case JsonArray array:
                 {
-                    throw new InvalidOperationException(
-                        $"{name}: step {index} ({op}) failed with HTTP " +
-                        $"{error.Status}, expected error_status {errorStatus}");
+                    var copy = new JsonArray();
+                    foreach (var item in array)
+                    {
+                        copy.Add(item == null ? null : Substitute(item));
+                    }
+                    return copy;
                 }
-                result = new JsonObject { ["error_code"] = error.Code };
+                case JsonValue value when value.TryGetValue<string>(out var text):
+                {
+                    var whole = WholeTokenPattern.Match(text);
+                    if (whole.Success)
+                    {
+                        try
+                        {
+                            return ResolveNode(whole.Groups[1].Value);
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            return JsonValue.Create("null");
+                        }
+                    }
+                    return JsonValue.Create(TokenPattern.Replace(
+                        text, match =>
+                        {
+                            try
+                            {
+                                var resolved = ResolveNode(match.Groups[1].Value);
+                                return resolved is JsonValue scalar
+                                    && scalar.TryGetValue<string>(out var inner)
+                                        ? inner
+                                        : resolved?.ToJsonString() ?? "null";
+                            }
+                            catch (InvalidOperationException)
+                            {
+                                return "null";
+                            }
+                        }));
+                }
+                default:
+                    return node?.DeepClone();
             }
-            catch (Exception error)
+        }
+
+        private static IEnumerable<string> SplitPath(string path)
+        {
+            var segments = new List<string>();
+            var depth = 0;
+            var start = 0;
+            for (var i = 0; i < path.Length; i++)
+            {
+                var c = path[i];
+                if (c == '[')
+                {
+                    depth += 1;
+                }
+                else if (c == ']')
+                {
+                    depth = Math.Max(0, depth - 1);
+                }
+                else if (c == '.' && depth == 0)
+                {
+                    segments.Add(path[start..i]);
+                    start = i + 1;
+                }
+            }
+            segments.Add(path[start..]);
+            return segments;
+        }
+
+        private static JsonNode? Dig(JsonNode? node, string path)
+        {
+            var current = node;
+            foreach (var segment in SplitPath(path))
+            {
+                if (current == null)
+                {
+                    return null;
+                }
+                var name = segment;
+                var indices = new List<string>();
+                var bracket = segment.IndexOf('[');
+                if (bracket >= 0)
+                {
+                    name = segment[..bracket];
+                    var rest = segment[bracket..];
+                    while (rest.StartsWith('['))
+                    {
+                        var close = rest.IndexOf(']');
+                        if (close < 0)
+                        {
+                            return null;
+                        }
+                        indices.Add(rest[1..close]);
+                        rest = rest[(close + 1)..];
+                    }
+                }
+                if (name.Length > 0)
+                {
+                    if (current is not JsonObject obj || !obj.TryGetPropertyValue(name, out var next))
+                    {
+                        return null;
+                    }
+                    current = next;
+                }
+                foreach (var index in indices)
+                {
+                    if (index.Length >= 2 && index.StartsWith('"') && index.EndsWith('"'))
+                    {
+                        var key = index[1..^1];
+                        if (current is not JsonObject quoted
+                            || !quoted.TryGetPropertyValue(key, out var next))
+                        {
+                            return null;
+                        }
+                        current = next;
+                        continue;
+                    }
+                    if (current is not JsonArray array
+                        || !int.TryParse(index, out var position)
+                        || position >= array.Count)
+                    {
+                        return null;
+                    }
+                    current = array[position];
+                }
+            }
+            return current;
+        }
+
+        // ---- wire lowering ----
+
+        private static byte[] RawBytes(JsonNode? node)
+        {
+            switch (node)
+            {
+                case null:
+                    return Array.Empty<byte>();
+                case JsonObject wrapper:
+                    if (wrapper["utf8"] is { } utf8)
+                    {
+                        return Encoding.UTF8.GetBytes(utf8.GetValue<string>());
+                    }
+                    if (wrapper["hex"] is { } hex)
+                    {
+                        return Convert.FromHexString(hex.GetValue<string>());
+                    }
+                    if (wrapper["base64"] is { } b64)
+                    {
+                        return Convert.FromBase64String(b64.GetValue<string>());
+                    }
+                    return Array.Empty<byte>();
+                case JsonValue value when value.TryGetValue<string>(out var text):
+                    return Encoding.UTF8.GetBytes(text);
+                default:
+                    return Array.Empty<byte>();
+            }
+        }
+
+        private static void WireFields(JsonObject row)
+        {
+            foreach (var (raw, encoded) in new[]
+            {
+                ("key", "key_base64"),
+                ("payload", "payload_base64"),
+                ("after_key", "after_key_base64"),
+            })
+            {
+                if (row[raw] is { } value)
+                {
+                    row.Remove(raw);
+                    row[encoded] = Convert.ToBase64String(RawBytes(value));
+                }
+            }
+            if (row["metadata"] is { } metadata)
+            {
+                row.Remove("metadata");
+                var encoded = new JsonObject();
+                if (metadata is JsonObject entries)
+                {
+                    foreach (var entry in entries)
+                    {
+                        encoded[entry.Key] = Convert.ToBase64String(RawBytes(entry.Value));
+                    }
+                }
+                row["metadata_base64"] = encoded;
+            }
+            foreach (var field in new[] { "event_time_ns", "after_event_time_ns", "timestamp_ns" })
+            {
+                if (row[field] is JsonValue number
+                    && number.TryGetValue<long>(out var integer))
+                {
+                    row[field] = integer.ToString();
+                }
+            }
+        }
+
+        private static JsonNode? WireArgs(JsonNode? args)
+        {
+            if (args is not JsonObject obj)
+            {
+                return args?.DeepClone();
+            }
+            var wired = (JsonObject)obj.DeepClone();
+            if (wired["records"] is JsonArray records)
+            {
+                foreach (var record in records)
+                {
+                    if (record is JsonObject row)
+                    {
+                        WireFields(row);
+                    }
+                }
+            }
+            WireFields(wired);
+            return wired;
+        }
+
+        // ---- dispatch ----
+
+        private async Task<(int Status, JsonNode? Body)> DispatchAsync(
+            string op, JsonNode? args)
+        {
+            if (op == "health")
+            {
+                return await _wire.RequestAsync("GET", "/health", null);
+            }
+            if (op == "feed.records")
+            {
+                var a = args as JsonObject ?? new JsonObject();
+                var path = "/v1/feeds/records?feed="
+                    + Uri.EscapeDataString(a["feed"]?.GetValue<string>() ?? "");
+                if (a["limit"] is { } limit)
+                {
+                    path += "&limit=" + limit.ToJsonString();
+                }
+                if (a["after"] is { } after)
+                {
+                    path += "&after=" + Uri.EscapeDataString(after.GetValue<string>());
+                }
+                var (status, body) = await _wire.RequestAsync("GET", path, null);
+                if (body is JsonArray bare)
+                {
+                    var wrapped = new JsonObject();
+                    wrapped["records"] = bare.DeepClone();
+                    body = wrapped;
+                }
+                return (status, body);
+            }
+            if (op == "statestore.mutate")
+            {
+                // Flat {store, mutation_id, kind, key, payload, named}
+                // lowers to {store, mutation_id, op: {kind, key_base64?, ...}}.
+                var body = WireArgs(args) as JsonObject
+                    ?? throw new InvalidOperationException(
+                        "statestore.mutate args must be an object");
+                var kind = body["kind"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("statestore.mutate needs a `kind`");
+                body.Remove("kind");
+                var operation = new JsonObject { ["kind"] = kind };
+                foreach (var name in new[] { "key_base64", "payload_base64", "named" })
+                {
+                    if (body[name] is { } value)
+                    {
+                        body.Remove(name);
+                        operation[name] = value;
+                    }
+                }
+                body["op"] = operation;
+                return await _wire.RequestAsync("POST", "/v1/state-stores/mutate", body);
+            }
+            if (!WireEndpoints.TryGetValue(op, out var target))
+            {
+                throw new InvalidOperationException($"unsupported op {op}");
+            }
+            return await _wire.RequestAsync(target.Method, target.Path, WireArgs(args));
+        }
+
+        private void RunChaos(string op, JsonNode? args)
+        {
+            if (_chaosCmd.Length == 0)
             {
                 throw new InvalidOperationException(
-                    $"{name}: step {index} ({op}) failed: {error.Message}", error);
+                    $"unsupported: {op} needs a WHITEWATER_CHAOS_CMD hook");
             }
-            if (step["bind"] is { } bind)
+            var rendered = Substitute(args ?? new JsonObject()) as JsonObject ?? new JsonObject();
+            var action = new StringBuilder(op);
+            foreach (var key in rendered.Select(e => e.Key).OrderBy(k => k, StringComparer.Ordinal))
             {
-                context.Bindings[bind.GetValue<string>()] = result;
+                action.Append(' ').Append(rendered[key]?.ToJsonString().Trim('"'));
             }
-            if (expect == null)
+            var shell = OperatingSystem.IsWindows()
+                ? ("/c", "cmd.exe")
+                : ("-c", "/bin/sh");
+            var start = new ProcessStartInfo
             {
-                continue;
+                FileName = shell.Item2,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            start.ArgumentList.Add(shell.Item1);
+            start.ArgumentList.Add($"{_chaosCmd} {action}");
+            using var process = Process.Start(start)!;
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"chaos hook failed: {process.ExitCode}: {stdout}{stderr}");
             }
+        }
+
+        // ---- expectations ----
+
+        private void CheckExpect(int status, JsonNode? body, JsonObject expect)
+        {
             foreach (var entry in expect)
             {
-                if (entry.Key == "error_code" || entry.Key == "error_status")
+                var path = entry.Key;
+                var expected = entry.Value;
+                if (path == "error_status")
                 {
+                    if (status != expected!.GetValue<int>())
+                    {
+                        throw new InvalidOperationException(
+                            $"expected status {expected.ToJsonString()}, got {status}: "
+                                + (body?.ToJsonString() ?? "null"));
+                    }
                     continue;
                 }
-                var expected = entry.Value == null
-                    ? null
-                    : Substitute(entry.Value.DeepClone(), context);
-                CheckExpectation(name, index, op, entry.Key, expected, result, context);
-            }
-        }
-    }
-
-    private static void CheckExpectation(
-        string name, int index, string op, string path, JsonNode? expected,
-        JsonNode? result, ScenarioContext context)
-    {
-        var actual = Dig(result, path);
-        var fail = (string detail) => new InvalidOperationException(
-            $"{name}: step {index} ({op}) expectation '{path}' failed: {detail}");
-        var expectedText = expected is JsonValue expectedValue
-            && expectedValue.TryGetValue<string>(out var expectedString)
-                ? expectedString
-                : null;
-        switch (expectedText)
-        {
-            case "!=null":
-                if (actual == null)
+                if (path == "error_code")
                 {
-                    throw fail("expected non-null, got null");
-                }
-                return;
-            case "present":
-                if (actual == null)
-                {
-                    throw fail("expected present, got absent");
-                }
-                return;
-            case "absent":
-                if (actual != null)
-                {
-                    throw fail($"expected absent, got {actual.ToJsonString()}");
-                }
-                return;
-            case { } text when text.StartsWith("len>="):
-            {
-                var bound = int.Parse(text[5..]);
-                var length = actual switch
-                {
-                    JsonArray array => array.Count,
-                    JsonObject obj => obj.Count,
-                    JsonValue textValue when textValue.TryGetValue<string>(out var innerText)
-                        => innerText.Length,
-                    _ => -1,
-                };
-                if (length < bound)
-                {
-                    throw fail($"expected len>={bound}, got {length}");
-                }
-                return;
-            }
-            case { } text when text.StartsWith("=="):
-            {
-                var bound = Dig(context.Bindings, text[2..]);
-                if (!LooseEquals(bound, actual))
-                {
-                    throw fail($"expected {text}=" +
-                        $"{bound?.ToJsonString() ?? "null"}, got " +
-                        $"{actual?.ToJsonString() ?? "null"}");
-                }
-                return;
-            }
-            default:
-                if (!LooseEquals(expected, actual))
-                {
-                    throw fail($"expected {expected?.ToJsonString() ?? "null"}, got " +
-                        $"{actual?.ToJsonString() ?? "null"}");
-                }
-                return;
-        }
-    }
-
-    private static async Task<JsonNode?> Call(WhitewaterClient client, JsonNode step)
-    {
-        var transport = client.Transport;
-        var args = step["args"] as JsonObject ?? new JsonObject();
-        switch (step["op"]!.GetValue<string>())
-        {
-            case "wcl":
-                return ResultNode(await client.WclAsync(
-                    args["script"]!.GetValue<string>()));
-            case "admin.commands":
-            {
-                var commands = new List<JsonObject>();
-                foreach (var command in args["commands"]!.AsArray())
-                {
-                    commands.Add(command!.AsObject());
-                }
-                return ResultNode(await client.CommandsAsync(commands));
-            }
-            case "feed.append":
-            {
-                var record = new FeedAppend(
-                    Guid.Parse(args["request_id"]!.GetValue<string>()),
-                    Guid.Parse(args["writer_session_id"]!.GetValue<string>()),
-                    args["writer_epoch"]!.GetValue<long>(),
-                    args["sequence"]!.GetValue<long>(),
-                    DecodeBytes(args["key"]),
-                    DecodeBytes(args["payload"])!,
-                    args["event_time_ns"] is { } ns ? long.Parse(ns.GetValue<string>()) : null,
-                    DecodeMetadata(args["metadata"] as JsonObject));
-                return ResultNode(await client.Feeds.UseCompression(args["use_compression"]?.GetValue<bool>() ?? false)
-                    .AppendAsync(args["feed"]!.GetValue<string>(), record));
-            }
-            case "reader.temporary_fetch":
-            {
-                var options = new TemporaryFetchOptions(
-                    After: args["after"] is { } a ? new Cursor(a.GetValue<string>()) : null,
-                    Limit: LimitArg(args),
-                    NewOnly: args["new_only"]?.GetValue<bool>() ?? false,
-                    Tail: args["tail"]?.GetValue<bool>() ?? false,
-                    WaitMs: args["wait_ms"]?.GetValue<int>(),
-                    AfterEventTimeNs: args["after_event_time_ns"] is { } t
-                        ? long.Parse(t.GetValue<string>()) : null);
-                return ResultNode(await client.Feeds.TemporaryFetchAsync(
-                    args["feed"]!.GetValue<string>(), options));
-            }
-            case "writer.append":
-            {
-                var writer = SessionWriter(client, args).UseCompression(args["use_compression"]?.GetValue<bool>() ?? false);
-                return ResultNode(await writer.AppendAsync(
-                    DecodeBytes(args["key"]),
-                    DecodeBytes(args["payload"])!,
-                    Guid.Parse(args["request_id"]!.GetValue<string>()),
-                    args["event_time_ns"] is { } t ? long.Parse(t.GetValue<string>()) : null,
-                    DecodeMetadata(args["metadata"] as JsonObject)));
-            }
-            case "writer.append_batch":
-            {
-                var records = new List<WriterSessionClient.AppendInput>();
-                foreach (var recordNode in args["records"]!.AsArray())
-                {
-                    var record = recordNode!.AsObject();
-                    var writer = SessionWriter(client, record);
-                    records.Add(new WriterSessionClient.AppendInput(
-                        DecodeBytes(record["key"]),
-                        DecodeBytes(record["payload"])!,
-                        Guid.Parse(record["request_id"]!.GetValue<string>()),
-                        record["event_time_ns"] is { } t
-                            ? long.Parse(t.GetValue<string>()) : null,
-                        DecodeMetadata(record["metadata"] as JsonObject)));
-                }
-                // Batch writer/session come from the first record; every
-                // record in a fixture batch shares them.
-                var batchWriter = SessionWriter(client, args["records"]![0]!.AsObject())
-                    .UseCompression(args["use_compression"]?.GetValue<bool>() ?? false);
-                return ResultNode(await batchWriter.AppendBatchAsync(records));
-            }
-            case "reader.open":
-                return ResultNode(await client.Reader(
-                        args["reader"]!.GetValue<string>())
-                    .OpenAsync(args["capacity"]?.GetValue<int>() ?? 64));
-            case "reader.fetch":
-                return ResultNode(await client.Reader(args["reader"]!.GetValue<string>())
-                    .FetchAsync(SessionFromArgs(args), LimitArg(args)));
-            case "reader.ack":
-                return ResultNode(await client.Reader(args["reader"]!.GetValue<string>())
-                    .AckAsync(SessionFromArgs(args), new Cursor(args["cursor"]!.GetValue<string>())));
-            case "reader.close":
-                return ResultNode(await client.Reader(args["reader"]!.GetValue<string>())
-                    .CloseAsync(SessionFromArgs(args)));
-            case "member.join":
-                return ResultNode(await Member(client, args).JoinAsync(
-                    Guid.Parse(args["member_id"]!.GetValue<string>())));
-            case "member.claim":
-            {
-                var lease = await Member(client, args).ClaimAsync(JoinedFromArgs(args),
-                    Guid.Parse(args["work_id"]!.GetValue<string>()),
-                    args["lease_ticks"] is { } ticks ? ticks.GetValue<int>() : null);
-                return new JsonObject { ["lease"] = ResultNode(lease) };
-            }
-            case "member.renew":
-            {
-                var lease = await Member(client, args)
-                    .RenewAsync(JoinedFromArgs(args), LeaseFromArgs(args));
-                return new JsonObject { ["lease"] = ResultNode(lease) };
-            }
-            case "member.fetch":
-                return ResultNode(await Member(client, args).FetchAsync(
-                    JoinedFromArgs(args), LeaseFromArgs(args), LimitArg(args)));
-            case "member.ack":
-            {
-                var page = new MemberPage(
-                    new List<FeedRecord>(),
-                    Cursor.Of(args["cursor"]?.GetValue<string>()),
-                    DecodePositions(args["positions"] as JsonObject),
-                    args["ownership_epoch"]?.GetValue<long>() ?? 0);
-                await Member(client, args)
-                    .AckAsync(JoinedFromArgs(args), LeaseFromArgs(args), page);
-                return new JsonObject();
-            }
-            case "member.release":
-                await Member(client, args)
-                    .ReleaseAsync(JoinedFromArgs(args), LeaseFromArgs(args));
-                return new JsonObject();
-            case "feed.records":
-            {
-                var path = "/v1/feeds/records?feed="
-                    + Uri.EscapeDataString(args["feed"]!.GetValue<string>());
-                if (args["limit"] is { } limit)
-                {
-                    path += "&limit=" + limit.GetValue<int>();
-                }
-                // Bound raw: fixture paths reference wire field names.
-                var raw = await transport.GetAsync(path);
-                return raw is JsonObject ? raw : new JsonObject { ["records"] = raw?.DeepClone() };
-            }
-            default:
-                throw new InvalidOperationException(
-                    $"unsupported op {step["op"]!.GetValue<string>()}");
-        }
-    }
-
-    private static int? LimitArg(JsonNode args)
-        => args["limit"] is { } limit ? limit.GetValue<int>() : null;
-
-    private static WriterSessionClient SessionWriter(WhitewaterClient client, JsonNode args)
-    {
-        return client.Writer(
-            args["writer"]!.GetValue<string>(),
-            args["session_epoch"]!.GetValue<long>());
-    }
-
-    private static SubscriptionMemberClient Member(WhitewaterClient client, JsonNode args)
-    {
-        return client.SubscriptionMember(args["subscription"]!.GetValue<string>());
-    }
-
-    private static ReaderSession SessionFromArgs(JsonNode args)
-    {
-        return new ReaderSession(
-            Guid.NewGuid(), Guid.NewGuid(), args["session_epoch"]!.GetValue<long>(), 0,
-            null, null);
-    }
-
-    private static Joined JoinedFromArgs(JsonNode args)
-    {
-        return new Joined(
-            Guid.Parse(args["member_id"]!.GetValue<string>()),
-            args["member_epoch"]!.GetValue<long>(), 0, 0);
-    }
-
-    private static WorkLease LeaseFromArgs(JsonNode args)
-    {
-        return new WorkLease(
-            Guid.Parse(args["work_id"]!.GetValue<string>()),
-            Guid.Parse(args["member_id"]!.GetValue<string>()),
-            args["member_epoch"]!.GetValue<long>(),
-            args["lease_epoch"]!.GetValue<long>(), 0);
-    }
-
-    // -- fixture vocabulary ---------------------------------------------
-
-    /// <summary>Decodes a fixture byte wrapper: utf8, hex, or base64.</summary>
-    private static byte[]? DecodeBytes(JsonNode? node)
-    {
-        switch (node)
-        {
-            case null:
-                return null;
-            case JsonValue value when value.TryGetValue<string>(out var base64):
-                return Convert.FromBase64String(base64);
-            case JsonObject wrapper:
-                if (wrapper["utf8"] is { } utf8)
-                {
-                    return System.Text.Encoding.UTF8.GetBytes(utf8.GetValue<string>());
-                }
-                if (wrapper["hex"] is { } hex)
-                {
-                    return Convert.FromHexString(hex.GetValue<string>());
-                }
-                if (wrapper["base64"] is { } b64)
-                {
-                    return Convert.FromBase64String(b64.GetValue<string>());
-                }
-                throw new InvalidOperationException(
-                    $"unknown byte wrapper {wrapper.ToJsonString()}");
-            default:
-                throw new InvalidOperationException(
-                    $"cannot decode bytes from {node.ToJsonString()}");
-        }
-    }
-
-    private static Dictionary<string, byte[]>? DecodeMetadata(JsonObject? metadata)
-    {
-        if (metadata == null)
-        {
-            return null;
-        }
-        var decoded = new Dictionary<string, byte[]>();
-        foreach (var entry in metadata)
-        {
-            decoded[entry.Key] = DecodeBytes(entry.Value)!;
-        }
-        return decoded;
-    }
-
-    private static Dictionary<string, string> DecodePositions(JsonObject? positions)
-    {
-        var decoded = new Dictionary<string, string>();
-        if (positions == null)
-        {
-            return decoded;
-        }
-        foreach (var entry in positions)
-        {
-            decoded[entry.Key] = entry.Value!.GetValue<string>();
-        }
-        return decoded;
-    }
-
-    // -- result -> wire-name binding ------------------------------------
-
-    private static readonly JsonSerializerOptions ResultOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DictionaryKeyPolicy = JsonNamingPolicy.SnakeCaseLower,
-        Converters = { new CursorJsonConverter(), new JsonNodeConverter() },
-    };
-
-    private static JsonNode ResultNode(object value)
-        => JsonNode.Parse(JsonSerializer.Serialize(value, ResultOptions))!;
-
-    private sealed class CursorJsonConverter
-        : System.Text.Json.Serialization.JsonConverter<Cursor>
-    {
-        public override Cursor Read(ref Utf8JsonReader reader, Type typeToConvert,
-            JsonSerializerOptions options)
-            => new(reader.GetString()!);
-        public override void Write(Utf8JsonWriter writer, Cursor value,
-            JsonSerializerOptions options)
-            => writer.WriteStringValue(value.Value);
-    }
-
-    private sealed class JsonNodeConverter
-        : System.Text.Json.Serialization.JsonConverter<JsonNode>
-    {
-        public override JsonNode Read(ref Utf8JsonReader reader, Type typeToConvert,
-            JsonSerializerOptions options)
-            => JsonNode.Parse(ref reader)!;
-        public override void Write(Utf8JsonWriter writer, JsonNode value,
-            JsonSerializerOptions options)
-            => value.WriteTo(writer);
-    }
-
-    // -- substitution + deep comparison ---------------------------------
-
-    private sealed class ScenarioContext
-    {
-        public string Token { get; } = $"t{Guid.NewGuid():N}"[..12];
-        public Dictionary<string, Guid> NamedIds { get; } = new();
-        public Dictionary<string, JsonNode?> Bindings { get; } = new();
-    }
-
-    private static JsonNode Substitute(JsonNode node, ScenarioContext context)
-    {
-        switch (node)
-        {
-            case JsonObject obj:
-            {
-                var copy = new JsonObject();
-                foreach (var entry in obj)
-                {
-                    copy[entry.Key] = entry.Value == null
-                        ? null
-                        : Substitute(entry.Value, context);
-                }
-                return copy;
-            }
-            case JsonArray array:
-            {
-                var copy = new JsonArray();
-                foreach (var item in array)
-                {
-                    copy.Add(item == null ? null : Substitute(item, context));
-                }
-                return copy;
-            }
-            case JsonValue value:
-            {
-                if (value.TryGetValue<string>(out var text))
-                {
-                    if (text.StartsWith("{{") && text.EndsWith("}}"))
+                    var code = body is JsonObject obj && obj.TryGetPropertyValue("code", out var c)
+                        ? c
+                        : null;
+                    if (!JsonNode.DeepEquals(code, expected))
                     {
-                        return Resolve(text, context);
+                        throw new InvalidOperationException(
+                            $"expected code {expected?.ToJsonString()}, got body "
+                                + (body?.ToJsonString() ?? "null"));
                     }
-                    return JsonValue.Create(text.Replace("{{uniq}}", context.Token))!;
+                    continue;
                 }
-                return value.DeepClone();
+                Check(path, Dig(body, path), expected, body);
             }
-            default:
-                return node.DeepClone();
         }
-    }
 
-    private static JsonNode Resolve(string template, ScenarioContext context)
-    {
-        var inner = template[2..^2];
-        if (inner == "uniq")
+        private void Check(string path, JsonNode? actual, JsonNode? expected, JsonNode? body)
         {
-            return JsonValue.Create(context.Token)!;
-        }
-        if (inner == "uuid")
-        {
-            return JsonValue.Create(Guid.NewGuid().ToString())!;
-        }
-        if (inner.StartsWith("uuid:"))
-        {
-            var name = inner[5..];
-            if (!context.NamedIds.TryGetValue(name, out var id))
+            if (expected is JsonValue expectedValue
+                && expectedValue.TryGetValue<string>(out var text))
             {
-                id = Guid.NewGuid();
-                context.NamedIds[name] = id;
+                switch (text)
+                {
+                    case "present":
+                    case "!=null":
+                        if (actual == null)
+                        {
+                            throw new InvalidOperationException(
+                                $"{path} absent in {body?.ToJsonString()}");
+                        }
+                        return;
+                    case "absent":
+                        if (actual != null)
+                        {
+                            throw new InvalidOperationException(
+                                $"{path} present: {actual.ToJsonString()}");
+                        }
+                        return;
+                }
+                if (text.StartsWith("len>="))
+                {
+                    var minimum = int.Parse(text[5..]);
+                    var length = actual switch
+                    {
+                        JsonArray array => array.Count,
+                        JsonObject obj => obj.Count,
+                        JsonValue v when v.TryGetValue<string>(out var s) => s.Length,
+                        _ => -1,
+                    };
+                    if (length < minimum)
+                    {
+                        throw new InvalidOperationException(
+                            $"{path} len {length} < {minimum} in {body?.ToJsonString()}");
+                    }
+                    return;
+                }
+                if (text.StartsWith("=="))
+                {
+                    var reference = text[2..];
+                    var dot = reference.IndexOf('.');
+                    var head = dot < 0 ? reference : reference[..dot];
+                    JsonNode? expectedBound = null;
+                    if (_bound.TryGetValue(head, out var bound))
+                    {
+                        expectedBound = dot < 0 ? bound : Dig(bound, reference[(dot + 1)..]);
+                    }
+                    if (!JsonNode.DeepEquals(actual, expectedBound))
+                    {
+                        throw new InvalidOperationException(
+                            $"{path} = {actual?.ToJsonString() ?? "null"}, expected "
+                                + (expectedBound?.ToJsonString() ?? "null"));
+                    }
+                    return;
+                }
             }
-            return JsonValue.Create(id.ToString())!;
+            if (expected is JsonObject wrapper && wrapper["base64_json"] is JsonObject nested)
+            {
+                // Decode the actual base64 string as JSON, then apply each
+                // named expectation to the decoded document.
+                JsonNode? decoded = null;
+                if (actual is JsonValue av && av.TryGetValue<string>(out var encoded))
+                {
+                    try
+                    {
+                        decoded = JsonNode.Parse(
+                            Encoding.UTF8.GetString(Convert.FromBase64String(encoded)));
+                    }
+                    catch (Exception)
+                    {
+                        decoded = null;
+                    }
+                }
+                if (decoded == null)
+                {
+                    throw new InvalidOperationException(
+                        $"{path} is not base64 JSON: {actual?.ToJsonString() ?? "null"}");
+                }
+                try
+                {
+                    CheckExpect(0, decoded, (JsonObject)nested.DeepClone());
+                }
+                catch (InvalidOperationException inner)
+                {
+                    throw new InvalidOperationException($"{path} decoded: {inner.Message}");
+                }
+                return;
+            }
+            // i64 nanoseconds may arrive as decimal strings or JSON numbers.
+            if (!LooseEquals(expected, actual))
+            {
+                throw new InvalidOperationException(
+                    $"{path} = {actual?.ToJsonString() ?? "null"}, expected "
+                        + (expected?.ToJsonString() ?? "null")
+                        + $" in {body?.ToJsonString() ?? "null"}");
+            }
         }
-        var bound = Dig(context.Bindings, inner)
-            ?? throw new InvalidOperationException($"unresolved token {template}");
-        // Whole-node splice: objects/arrays substitute verbatim; scalars
-        // come back as their JSON value.
-        return bound.DeepClone();
-    }
 
-    private static JsonNode? Dig(JsonNode? node, string path)
-    {
-        var current = node;
-        foreach (var segment in path.Split('.'))
+        private static bool LooseEquals(JsonNode? expected, JsonNode? actual)
         {
-            if (current == null)
+            if (expected == null || actual == null)
             {
-                return null;
+                return expected == null && actual == null;
             }
-            if (segment.EndsWith(']') && segment.Contains('['))
+            if (expected is JsonValue expectedValue && actual is JsonValue actualValue)
             {
-                var bracket = segment.IndexOf('[');
-                var key = segment[..bracket];
-                var index = int.Parse(segment[(bracket + 1)..^1]);
-                current = current[key];
-                current = current is JsonArray array && index < array.Count
-                    ? array[index]
-                    : null;
+                if (expectedValue.TryGetValue<string>(out var expectedText)
+                    && actualValue.TryGetValue<string>(out var actualText))
+                {
+                    return expectedText == actualText;
+                }
+                if (TryNumber(expectedValue, out var expectedNumber)
+                    && TryNumber(actualValue, out var actualNumber))
+                {
+                    return expectedNumber == actualNumber;
+                }
             }
-            else
-            {
-                current = current[segment];
-            }
+            return JsonNode.DeepEquals(expected, actual);
         }
-        return current;
-    }
 
-    private static JsonNode? Dig(Dictionary<string, JsonNode?> bindings, string path)
-    {
-        var dot = path.IndexOf('.');
-        var head = dot < 0 ? path : path[..dot];
-        if (!bindings.TryGetValue(head, out var node) || node == null)
+        private static bool TryNumber(JsonValue value, out long number)
         {
-            return null;
-        }
-        return dot < 0 ? node : Dig(node, path[(dot + 1)..]);
-    }
-
-    private static bool LooseEquals(JsonNode? expected, JsonNode? actual)
-    {
-        if (expected == null || actual == null)
-        {
-            return expected == null && actual == null;
-        }
-        if (expected is JsonValue expectedValue && actual is JsonValue actualValue)
-        {
-            if (expectedValue.TryGetValue<string>(out var expectedText)
-                && actualValue.TryGetValue<string>(out var actualText))
+            if (value.TryGetValue<long>(out number))
             {
-                return expectedText == actualText;
+                return true;
             }
-            // Loose numeric compare: i64 values may arrive as decimal
-            // strings or JSON numbers.
-            if (TryNumber(expectedValue, out var expectedNumber)
-                && TryNumber(actualValue, out var actualNumber))
+            if (value.TryGetValue<string>(out var text) && long.TryParse(text, out number))
             {
-                return expectedNumber == actualNumber;
+                return true;
+            }
+            return false;
+        }
+
+        // ---- anonymous-uuid rebinding ----
+
+        private static JsonNode? BindAnonymousUuids(JsonNode? node, int step, int[] ordinal)
+        {
+            switch (node)
+            {
+                case JsonObject obj:
+                {
+                    var copy = new JsonObject();
+                    foreach (var entry in obj)
+                    {
+                        copy[entry.Key] = entry.Value == null
+                            ? null
+                            : BindAnonymousUuids(entry.Value, step, ordinal);
+                    }
+                    return copy;
+                }
+                case JsonArray array:
+                {
+                    var copy = new JsonArray();
+                    foreach (var item in array)
+                    {
+                        copy.Add(item == null ? null : BindAnonymousUuids(item, step, ordinal));
+                    }
+                    return copy;
+                }
+                case JsonValue value when value.TryGetValue<string>(out var text):
+                    while (text.Contains("{{uuid}}"))
+                    {
+                        text = text.Replace("{{uuid}}", $"{{{{uuid:anon-{step}-{ordinal[0]}}}}}");
+                        ordinal[0] += 1;
+                    }
+                    return JsonValue.Create(text);
+                default:
+                    return node?.DeepClone();
             }
         }
-        return expected.ToJsonString() == actual.ToJsonString();
-    }
 
-    private static bool TryNumber(JsonValue value, out long number)
-    {
-        if (value.TryGetValue<long>(out number))
+        // ---- driver ----
+
+        public async Task RunAsync(string name, JsonNode scenario)
         {
-            return true;
+            var steps = scenario["steps"] as JsonArray
+                ?? throw new InvalidOperationException($"{name}: no steps");
+            var index = 0;
+            foreach (var stepNode in steps)
+            {
+                var step = stepNode!.AsObject();
+                var op = step["op"]!.GetValue<string>();
+
+                if (op.StartsWith("chaos."))
+                {
+                    try
+                    {
+                        RunChaos(op, step["args"]);
+                    }
+                    catch (Exception error)
+                    {
+                        throw new InvalidOperationException(
+                            $"{name}: step {index} ({op}): {error.Message}", error);
+                    }
+                    index += 1;
+                    continue;
+                }
+
+                var isSpecial = op is "feed.records" or "health" or "statestore.mutate";
+                if (!WireEndpoints.ContainsKey(op) && !isSpecial)
+                {
+                    throw new InvalidOperationException(
+                        $"{name}: step {index}: unsupported op {op}");
+                }
+
+                var argsTemplate = BindAnonymousUuids(step["args"], index, new[] { 0 });
+                var poll = step["poll"] as JsonObject;
+                var pollTimes = Math.Clamp(poll?["times"]?.GetValue<int>() ?? 1, 1, 30);
+                var pollIntervalMs = Math.Min(
+                    poll?["interval_ms"]?.GetValue<int>() is { } interval && interval > 0
+                        ? interval
+                        : 500,
+                    10_000);
+
+                var attempt = 0;
+                var transient = 0;
+                int status;
+                JsonNode? body;
+                while (true)
+                {
+                    var args = Substitute(argsTemplate);
+                    try
+                    {
+                        (status, body) = await DispatchAsync(op, args);
+                    }
+                    catch (TransportException)
+                    {
+                        if (transient < TransientAttempts)
+                        {
+                            transient += 1;
+                            await Task.Delay(TransientInterval);
+                            continue;
+                        }
+                        attempt += 1;
+                        if (attempt < pollTimes)
+                        {
+                            await Task.Delay(pollIntervalMs);
+                            continue;
+                        }
+                        throw new InvalidOperationException(
+                            $"{name}: step {index} ({op}): transport exhausted");
+                    }
+                    catch (Exception error)
+                    {
+                        throw new InvalidOperationException(
+                            $"{name}: step {index} ({op}): {error.Message}", error);
+                    }
+                    if (status >= 500 && transient < TransientAttempts)
+                    {
+                        transient += 1;
+                        await Task.Delay(TransientInterval);
+                        continue;
+                    }
+                    attempt += 1;
+                    if (step["expect"] is JsonObject rawExpect)
+                    {
+                        var substituted = Substitute(rawExpect) as JsonObject ?? rawExpect;
+                        try
+                        {
+                            CheckExpect(status, body, substituted);
+                        }
+                        catch (InvalidOperationException error)
+                        {
+                            if (attempt < pollTimes)
+                            {
+                                await Task.Delay(pollIntervalMs);
+                                continue;
+                            }
+                            throw new InvalidOperationException(
+                                $"{name}: step {index} ({op}) expectation failed "
+                                    + $"(status {status}): {error.Message}");
+                        }
+                    }
+                    break;
+                }
+                if (step["bind"] is { } bind)
+                {
+                    _bound[bind.GetValue<string>()] = body;
+                }
+                index += 1;
+            }
         }
-        if (value.TryGetValue<string>(out var text) && long.TryParse(text, out number))
-        {
-            return true;
-        }
-        return false;
     }
 }
