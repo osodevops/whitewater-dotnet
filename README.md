@@ -265,6 +265,20 @@ This SDK implements the versioned wire contract in
 decimal-string signed 64-bit nanoseconds, base64 binary fields, opaque
 cursors, UUID request ids, and the shared structured error codes.
 
+## Unit-test doubles
+
+`Whitewater.Testing.FakeRiverbed` serves the wire contract over a loopback
+`HttpListener` — request-id dedupe, ack-gated redelivery, epoch fencing,
+modeled StateStores — so application tests exercise the real client.
+
+```csharp
+await using var fake = new FakeRiverbed();
+var client = new WhitewaterClient(apiKey, fake.Endpoints);
+```
+
+See `tests/Whitewater.Tests/FakeRiverbedTests.cs` and the
+[testing guide](../whitewater/docs/guides/testing-your-app.md).
+
 ## Conformance
 
 The shared fixture corpus runs against a live three-Node Riverbed:
