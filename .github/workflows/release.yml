@@ -1,0 +1,31 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+
+      - name: Pack
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          dotnet pack src/Whitewater/Whitewater.csproj -c Release -p:Version="${VERSION}" -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg -o dist
+          cd dist && sha256sum * > checksums.txt && cd -
+
+      - name: Create GitHub release
+        run: gh release create "${{ github.ref_name }}" dist/* --generate-notes --title "Whitewater.Client ${{ env.VERSION }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
