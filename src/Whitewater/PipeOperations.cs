@@ -164,29 +164,50 @@ public sealed record PipeOperation
 
     /// <summary>
     /// Accumulate each delivered record into fixed
-    /// <paramref name="windowNs"/>-wide panes of a managed StateStore
-    /// view. Panes are immutable once written; <paramref name="maxLateNs"/>
+    /// <paramref name="window"/>-wide panes of a managed StateStore
+    /// view. Panes are immutable once written; <paramref name="maxLate"/>
     /// bounds late-event policy (later arrivals quarantine into a
-    /// countable <c>late</c> row), <paramref name="watermarkNs"/> drives a
-    /// durable close horizon with <paramref name="graceNs"/> bounding
-    /// emitted-pane revision, and <paramref name="expireNs"/> bounds pane
-    /// retention once the pane provably closes.
+    /// countable <c>late</c> row), <paramref name="watermark"/> drives a
+    /// durable close horizon with <paramref name="grace"/> bounding
+    /// emitted-pane revision, and <paramref name="expire"/> bounds pane
+    /// retention once the pane provably closes. Every duration is a
+    /// <see cref="TimeSpan"/> — <c>TimeSpan.FromHours(1)</c>,
+    /// <c>TimeSpan.FromMinutes(5)</c>; the SDK extracts nanoseconds
+    /// internally for the wire.
     /// </summary>
     public static PipeOperation Window(
-        long windowNs,
+        TimeSpan window,
         Extractor key,
         WindowAggregation aggregation,
         WindowTime time = WindowTime.Event,
-        long? maxLateNs = null,
-        long? watermarkNs = null,
-        long? graceNs = null,
-        long? expireNs = null,
+        TimeSpan? maxLate = null,
+        TimeSpan? watermark = null,
+        TimeSpan? grace = null,
+        TimeSpan? expire = null,
         long? keyLimit = null,
         long? byteLimit = null)
     {
+        var windowNs = DurationNs(window, nameof(window));
         if (windowNs <= 0)
         {
-            throw new ArgumentException("windowNs must be positive", nameof(windowNs));
+            throw new ArgumentException(
+                "window must be a positive TimeSpan", nameof(window));
+        }
+        if (maxLate.HasValue && watermark.HasValue)
+        {
+            throw new ArgumentException(
+                "maxLate and watermark are alternative lateness models — declare exactly one");
+        }
+        if (watermark.HasValue && time == WindowTime.Ingest)
+        {
+            throw new ArgumentException(
+                "watermark is meaningless under the ingest clock — the horizon would " +
+                "follow arrival order, not event-time disorder");
+        }
+        if (grace.HasValue && !watermark.HasValue)
+        {
+            throw new ArgumentException(
+                "grace requires watermark — revision bounds ride the event-time horizon");
         }
         return new PipeOperation("window")
         {
@@ -196,13 +217,45 @@ public sealed record PipeOperation
                 nameof(aggregation), "aggregation is required"),
             WindowNs = windowNs,
             Time = time,
-            MaxLateNs = maxLateNs,
-            WatermarkNs = watermarkNs,
-            GraceNs = graceNs,
-            ExpireNs = expireNs,
+            MaxLateNs = NullableDurationNs(maxLate, nameof(maxLate)),
+            WatermarkNs = NullableDurationNs(watermark, nameof(watermark)),
+            GraceNs = NullableDurationNs(grace, nameof(grace)),
+            ExpireNs = NullableDurationNs(expire, nameof(expire)),
             KeyLimit = keyLimit,
             ByteLimit = byteLimit,
         };
+    }
+
+    /// <summary>Extract the exact nanosecond count a <see cref="TimeSpan"/>
+    /// carries — the internal wire encoding (1 tick = 100 ns).</summary>
+    private static long DurationNs(TimeSpan duration, string name)
+    {
+        try
+        {
+            return checked(duration.Ticks * 100L);
+        }
+        catch (OverflowException overflow)
+        {
+            throw new ArgumentException(
+                $"{name} overflows nanoseconds", name, overflow);
+        }
+    }
+
+    /// <summary>As <see cref="DurationNs"/> plus the positivity bound
+    /// every optional window duration carries.</summary>
+    private static long? NullableDurationNs(TimeSpan? duration, string name)
+    {
+        if (duration == null)
+        {
+            return null;
+        }
+        var ns = DurationNs(duration.Value, name);
+        if (ns <= 0)
+        {
+            throw new ArgumentException(
+                $"{name} must be a positive TimeSpan when declared", name);
+        }
+        return ns;
     }
 
     /// <summary>The wire form:

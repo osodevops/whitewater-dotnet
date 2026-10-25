@@ -223,12 +223,12 @@ await client.DefineEnrichPipeAsync("orders.enrich", "orders-sub",
     quarantineFeed: "orders.enrich-dlq");
 await client.DefineWindowPipeAsync("orders.hourly", "orders-sub",
     "stats.orders-hourly",
-    PipeOperation.Window(3_600_000_000_000UL,  // window_ns: 1h
+    PipeOperation.Window(TimeSpan.FromHours(1),  // 1h panes
         Extractor.RecordKey(), WindowAggregation.Count(),
         time: WindowTime.Event,
-        watermarkNs: 300_000_000_000UL,  // 5m horizon
-        graceNs: 30_000_000_000UL,       // 30s late revisions
-        expireNs: 7_200_000_000_000UL),
+        watermark: TimeSpan.FromMinutes(5),  // 5m horizon
+        grace: TimeSpan.FromSeconds(30),     // 30s late revisions
+        expire: TimeSpan.FromHours(2)),
     emitFeed: "orders.hourly-emitted");
 
 // Pipe lifecycle: describe, pause, resume, drop.

@@ -156,7 +156,7 @@ public class PipeDeclarationTests : IDisposable
     public void WindowOperationDefaultsEventTime()
     {
         var wire = PipeOperation.Window(
-            60_000_000_000L,
+            TimeSpan.FromMinutes(1),
             Extractor.RecordKey(),
             WindowAggregation.Count()).ToWire();
         Assert.Equal(
@@ -168,12 +168,12 @@ public class PipeDeclarationTests : IDisposable
     public void WindowOperationSerializesEveryDeclaredBound()
     {
         var wire = PipeOperation.Window(
-            3_600_000_000_000L,
+            TimeSpan.FromHours(1),
             Extractor.RecordKey(),
             WindowAggregation.Sum(Extractor.Json("total")),
             WindowTime.Ingest,
-            maxLateNs: 60_000_000_000L,
-            expireNs: 86_400_000_000_000L,
+            maxLate: TimeSpan.FromMinutes(1),
+            expire: TimeSpan.FromDays(1),
             keyLimit: 10_000L,
             byteLimit: 4_000_000L).ToWire();
         Assert.Equal(
@@ -185,11 +185,11 @@ public class PipeDeclarationTests : IDisposable
     public void WindowOperationSerializesWatermarkAndGrace()
     {
         var wire = PipeOperation.Window(
-            300_000_000_000L,
+            TimeSpan.FromMinutes(5),
             Extractor.Json("user"),
             WindowAggregation.Average(Extractor.Json("total")),
-            watermarkNs: 120_000_000_000L,
-            graceNs: 30_000_000_000L).ToWire();
+            watermark: TimeSpan.FromMinutes(2),
+            grace: TimeSpan.FromSeconds(30)).ToWire();
         Assert.Equal("window", wire["operation"]?.GetValue<string>());
         Assert.Equal(120_000_000_000L, wire["watermark_ns"]?.GetValue<long>());
         Assert.Equal(30_000_000_000L, wire["grace_ns"]?.GetValue<long>());
@@ -200,12 +200,42 @@ public class PipeDeclarationTests : IDisposable
     // ---- Factory validation ---------------------------------------------------
 
     [Fact]
-    public void WindowRejectsNonPositiveWindowNs()
+    public void WindowRejectsNonPositiveWindow()
     {
         Assert.Throws<ArgumentException>(() => PipeOperation.Window(
-            0, Extractor.RecordKey(), WindowAggregation.Count()));
+            TimeSpan.Zero, Extractor.RecordKey(), WindowAggregation.Count()));
         Assert.Throws<ArgumentException>(() => PipeOperation.Window(
-            -5, Extractor.RecordKey(), WindowAggregation.Count()));
+            TimeSpan.FromSeconds(-5), Extractor.RecordKey(), WindowAggregation.Count()));
+    }
+
+    [Fact]
+    public void WindowRejectsNonPositiveDeclaredBounds()
+    {
+        Assert.Throws<ArgumentException>(() => PipeOperation.Window(
+            TimeSpan.FromMinutes(1), Extractor.RecordKey(), WindowAggregation.Count(),
+            watermark: TimeSpan.Zero));
+        Assert.Throws<ArgumentException>(() => PipeOperation.Window(
+            TimeSpan.FromMinutes(1), Extractor.RecordKey(), WindowAggregation.Count(),
+            maxLate: TimeSpan.FromSeconds(-1)));
+    }
+
+    [Fact]
+    public void WindowValidatesLatenessModels()
+    {
+        // MAX_LATE and WATERMARK are alternative lateness models.
+        Assert.Throws<ArgumentException>(() => PipeOperation.Window(
+            TimeSpan.FromMinutes(1), Extractor.RecordKey(), WindowAggregation.Count(),
+            maxLate: TimeSpan.FromMinutes(1),
+            watermark: TimeSpan.FromMinutes(5)));
+        // WATERMARK follows the event clock only.
+        Assert.Throws<ArgumentException>(() => PipeOperation.Window(
+            TimeSpan.FromMinutes(1), Extractor.RecordKey(), WindowAggregation.Count(),
+            time: WindowTime.Ingest,
+            watermark: TimeSpan.FromMinutes(5)));
+        // GRACE requires WATERMARK — revision bounds ride the horizon.
+        Assert.Throws<ArgumentException>(() => PipeOperation.Window(
+            TimeSpan.FromMinutes(1), Extractor.RecordKey(), WindowAggregation.Count(),
+            grace: TimeSpan.FromSeconds(30)));
     }
 
     [Fact]
@@ -214,9 +244,9 @@ public class PipeDeclarationTests : IDisposable
         Assert.Throws<ArgumentNullException>(
             () => PipeOperation.Enrich(null!));
         Assert.Throws<ArgumentNullException>(() => PipeOperation.Window(
-            1, null!, WindowAggregation.Count()));
+            TimeSpan.FromSeconds(1), null!, WindowAggregation.Count()));
         Assert.Throws<ArgumentNullException>(() => PipeOperation.Window(
-            1, Extractor.RecordKey(), null!));
+            TimeSpan.FromSeconds(1), Extractor.RecordKey(), null!));
         Assert.Throws<ArgumentNullException>(
             () => WindowAggregation.Sum(null!));
         Assert.Throws<ArgumentNullException>(
@@ -291,12 +321,12 @@ public class PipeDeclarationTests : IDisposable
         await _client.DefineWindowPipeAsync(
             "orders.hourly", "orders.audit", "orders.hourlyspend",
             PipeOperation.Window(
-                3_600_000_000_000L,
+                TimeSpan.FromHours(1),
                 Extractor.RecordKey(),
                 WindowAggregation.Sum(Extractor.Json("total")),
                 WindowTime.Ingest,
-                maxLateNs: 60_000_000_000L,
-                expireNs: 86_400_000_000_000L,
+                maxLate: TimeSpan.FromMinutes(1),
+                expire: TimeSpan.FromDays(1),
                 keyLimit: 10_000L,
                 byteLimit: 4_000_000L),
             emitFeed: "orders.hourlyfeed");
@@ -325,7 +355,7 @@ public class PipeDeclarationTests : IDisposable
         await _client.DefineWindowPipeAsync(
             "orders.hourly", "orders.audit", "orders.hourlyspend",
             PipeOperation.Window(
-                60_000_000_000L, Extractor.RecordKey(), WindowAggregation.Count()));
+                TimeSpan.FromMinutes(1), Extractor.RecordKey(), WindowAggregation.Count()));
         var command = PostedCommand(0);
         Assert.Null(command["emit_feed"]);
         Assert.Equal("event", command["operation"]?["time"]?.GetValue<string>());
@@ -359,7 +389,7 @@ public class PipeDeclarationTests : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(() => _client.DefineWindowPipeAsync(
             "orders.p", "orders.audit", "orders.store-!",
             PipeOperation.Window(
-                1, Extractor.RecordKey(), WindowAggregation.Count())));
+                TimeSpan.FromTicks(1), Extractor.RecordKey(), WindowAggregation.Count())));
         await Assert.ThrowsAsync<ArgumentException>(() => _client.DefineEnrichPipeAsync(
             "orders.p", "orders.audit", "orders.out", "orders.store",
             PipeOperation.Enrich(Extractor.RecordKey()),

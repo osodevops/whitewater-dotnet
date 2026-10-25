@@ -79,24 +79,27 @@ await client.DefineWindowPipeAsync(
     "orders.sub",
     "ops.order.counts",               // pane store (declared above)
     PipeOperation.Window(
-        windowNs: 3_600_000_000_000L, // 1h
+        window: TimeSpan.FromHours(1),   // 1h panes
         key: Extractor.Json("$.region"),
         aggregation: WindowAggregation.Sum(Extractor.Json("$.total")),
-        time: WindowTime.Event,        // or WindowTime.Ingest
-        watermarkNs: 300_000_000_000L, // event-time close horizon
-        graceNs: 60_000_000_000L,      // revise emitted panes up to 1min late
-        expireNs: 86_400_000_000_000L, // keep panes 24h
+        time: WindowTime.Event,          // or WindowTime.Ingest
+        watermark: TimeSpan.FromMinutes(5), // event-time close horizon
+        grace: TimeSpan.FromMinutes(1),  // revise emitted panes up to 1min late
+        expire: TimeSpan.FromDays(1),    // keep panes 24h
         keyLimit: 10_000L),
     emitFeed: "ops.hourly.emits");     // optional closed-pane output
 ```
 
+Every window duration is a `TimeSpan` — the SDK extracts nanoseconds
+internally for the wire; callers never spell raw nanosecond counts.
+
 ### Lateness models — pick exactly one
 
-- `maxLateNs` — ingest-clock bound; later arrivals quarantine into a
+- `maxLate` — ingest-clock bound; later arrivals quarantine into a
   countable `late` row.
-- `watermarkNs` — event-time horizon `max(event_time) − watermarkNs`
+- `watermark` — event-time horizon `max(event_time) − watermark`
   closes a pane once it passes the pane end (refused under
-  `WindowTime.Ingest`); `graceNs` lets late events revise an emitted pane
+  `WindowTime.Ingest`); `grace` lets late events revise an emitted pane
   before counting into `late`.
 
 An emit feed requires a declared lateness model.

@@ -9,7 +9,7 @@ using Whitewater;
 //   client.Pipe(name).DescribeAsync() / PauseAsync() / ResumeAsync()
 //
 // PipeOperation carries the processing step: Forward(), Enrich(key,
-// freshness, named, onMiss), or Window(windowNs, key, aggregation, ...)
+// freshness, named, onMiss), or Window(TimeSpan, key, aggregation, ...)
 // with Extractor projections naming the business Key — no sliding step,
 // panes, or partitions leak into the public model.
 
@@ -56,16 +56,16 @@ await client.DefineEnrichPipeAsync(
 
 // Rolling hourly aggregation: sum the JSON "total" projection into
 // pipes.hourlyspend panes; emit closed panes to pipes.orders.hourlyemit
-// (emit requires a declared lateness bound — here maxLateNs).
+// (emit requires a declared lateness bound — here maxLate).
 await client.DefineWindowPipeAsync(
     "pipes.hourly", "audit", "pipes.hourlyspend",
     PipeOperation.Window(
-        3_600_000_000_000L,
+        TimeSpan.FromHours(1),
         Extractor.RecordKey(),
         WindowAggregation.Sum(Extractor.Json("total")),
         WindowTime.Ingest,
-        maxLateNs: 60_000_000_000L,
-        expireNs: 86_400_000_000_000L),
+        maxLate: TimeSpan.FromMinutes(1),
+        expire: TimeSpan.FromDays(1)),
     emitFeed: "pipes.orders.hourlyemit");
 
 // Lifecycle: describe reports the catalog row; pause halts driving
