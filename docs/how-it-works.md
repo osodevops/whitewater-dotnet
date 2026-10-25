@@ -71,8 +71,8 @@ Raw script — several statements commit as one request (pass a shared
 await client.WclAsync("""
     CREATE DOMAIN shop;
     CREATE FEED shop.orders;
-    CREATE WRITER orders-writer TO shop.orders;
-    OPEN WRITER SESSION orders-writer;
+    CREATE WRITER orders.writer TO shop.orders;
+    OPEN WRITER SESSION orders.writer;
     CREATE READER audit FROM shop.orders START AT BEGINNING;
     SHOW FEEDS;
     """);
@@ -84,8 +84,8 @@ statement and calls `WclAsync` internally:
 ```csharp
 await client.CreateDomainAsync("shop");              // CREATE DOMAIN shop;
 await client.CreateFeedAsync("shop.orders");         // CREATE FEED shop.orders;
-await client.CreateWriterAsync("orders-writer", "shop.orders");
-await client.OpenWriterSessionAsync("orders-writer");// epoch in .Data
+await client.CreateWriterAsync("orders.writer", "shop.orders");
+await client.OpenWriterSessionAsync("orders.writer");// epoch in .Data
 await client.CreateReaderAsync("audit", "shop.orders", ReaderStart.Beginning());
 await client.ListFeedsAsync();                       // SHOW FEEDS;
 await client.SeekReaderAsync("audit", ReaderStart.Now()); // SEEK ... TO NOW;

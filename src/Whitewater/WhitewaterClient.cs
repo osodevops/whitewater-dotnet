@@ -429,17 +429,9 @@ public sealed class WhitewaterClient
         return name;
     }
 
-    /// <summary>Single-segment resource names (writers, readers,
-    /// subscriptions, roles).</summary>
-    private static string Resource(string name)
-    {
-        ArgumentNullException.ThrowIfNull(name);
-        if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"^[A-Za-z][A-Za-z0-9_-]{0,127}$"))
-        {
-            throw new ArgumentException($"invalid resource name: {name}", nameof(name));
-        }
-        return name;
-    }
+    /// <summary>Resource names (writers, readers, subscriptions, roles)
+    /// share the same dotted grammar the server validates.</summary>
+    private static string Resource(string name) => Dotted(name);
 
     public WriterSessionClient Writer(string name, long sessionEpoch)
         => new(_transport, name, sessionEpoch);

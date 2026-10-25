@@ -30,9 +30,9 @@ var client = new WhitewaterClient(
 // Plane state, not a per-session object.
 await client.CreateDomainAsync("demo");
 await client.CreateFeedAsync("demo.tail");
-await client.CreateReaderAsync("demo-reader", "demo.tail", ReaderStart.Beginning());
+await client.CreateReaderAsync("demo.reader", "demo.tail", ReaderStart.Beginning());
 
-var reader = client.Reader("demo-reader");
+var reader = client.Reader("demo.reader");
 
 // OpenAsync fences this client as the session owner. Another client
 // opening the same Reader supersedes this session (stale_epoch on the

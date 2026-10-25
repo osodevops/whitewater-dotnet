@@ -232,7 +232,7 @@ public class SubscribeLoadTests : IDisposable
         var batches = new ConcurrentQueue<IReadOnlyList<FeedRecord>>();
 
         await using var sub = _client.Subscribe(
-            "hr-view", "hr.employees", ReaderStart.Beginning(),
+            "hr.view", "hr.employees", ReaderStart.Beginning(),
             records =>
             {
                 batches.Enqueue(records);

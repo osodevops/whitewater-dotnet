@@ -118,6 +118,9 @@ public class WclBuildersTests : IDisposable
 
         await _client.CreateSubscriptionAsync("team", "orders.events", ReaderStart.Now());
         Assert.Equal("CREATE SUBSCRIPTION team FROM orders.events START AT NOW", Script());
+
+        await _client.CreateSubscriptionAsync("orders.sub", "orders.events", ReaderStart.Beginning());
+        Assert.Equal("CREATE SUBSCRIPTION orders.sub FROM orders.events START AT BEGINNING", Script());
     }
 
     [Fact]
@@ -165,6 +168,8 @@ public class WclBuildersTests : IDisposable
             () => _client.CreateWriterAsync("bad;name", "orders.events"));
         await Assert.ThrowsAsync<ArgumentException>(
             () => _client.CreateReaderAsync("a'b", "orders.events"));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _client.CreateSubscriptionAsync("orders-sub", "orders.events"));
         await Assert.ThrowsAsync<ArgumentException>(
             () => _client.RenameDomainAsync("orders", "INJECTION; DROP"));
         Assert.Equal("", _capturedPath);

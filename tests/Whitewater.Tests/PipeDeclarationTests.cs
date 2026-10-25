@@ -145,10 +145,10 @@ public class PipeDeclarationTests : IDisposable
         var wire = PipeOperation.Enrich(
             Extractor.Metadata("customer_id"),
             EnrichFreshness.Strict,
-            "by-id",
+            "by_id",
             EnrichMiss.Quarantine).ToWire();
         Assert.Equal(
-            """{"operation":"enrich","key":{"kind":"metadata","name":"customer_id"},"freshness":"strict","named":"by-id","on_miss":"quarantine"}""",
+            """{"operation":"enrich","key":{"kind":"metadata","name":"customer_id"},"freshness":"strict","named":"by_id","on_miss":"quarantine"}""",
             wire.ToJsonString());
     }
 
@@ -254,7 +254,7 @@ public class PipeDeclarationTests : IDisposable
             PipeOperation.Enrich(
                 Extractor.Metadata("customer_id"),
                 EnrichFreshness.Strict,
-                "by-id",
+                "by_id",
                 EnrichMiss.Quarantine),
             quarantineFeed: "orders.quarantine");
         var command = PostedCommand(0);
@@ -267,7 +267,7 @@ public class PipeDeclarationTests : IDisposable
         Assert.Equal("metadata", operation["key"]?["kind"]?.GetValue<string>());
         Assert.Equal("customer_id", operation["key"]?["name"]?.GetValue<string>());
         Assert.Equal("strict", operation["freshness"]?.GetValue<string>());
-        Assert.Equal("by-id", operation["named"]?.GetValue<string>());
+        Assert.Equal("by_id", operation["named"]?.GetValue<string>());
         Assert.Equal("quarantine", operation["on_miss"]?.GetValue<string>());
     }
 

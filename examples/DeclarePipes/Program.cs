@@ -30,10 +30,13 @@ await client.CreateFeedAsync("pipes.orders.quarantine");
 await client.CreateFeedAsync("pipes.orders.hourlyemit");
 await client.CreateSubscriptionAsync("audit", "pipes.orders");
 
-// The enrichment lookup store plus the managed window-aggregation view.
+// The enrichment lookup store plus the window-aggregation pane view.
+// A window Pipe's output store must declare non-unique 'key' and 'pane'
+// named keys so the view stays enumerable without composite row keys.
 await client.StateStores.DefineAsync(
-    StateStore.Named("pipes.customers").AddKey("by-id", unique: true));
-await client.StateStores.DefineAsync(StateStore.Named("pipes.hourlyspend"));
+    StateStore.Named("pipes.customers").AddKey("by_id", unique: true));
+await client.StateStores.DefineAsync(
+    StateStore.Named("pipes.hourlyspend").AddKey("key").AddKey("pane"));
 
 // The copy Pipe: every delivered record lands on the output Feed
 // unchanged.
@@ -47,7 +50,7 @@ await client.DefineEnrichPipeAsync(
     PipeOperation.Enrich(
         Extractor.Metadata("customer_id"),
         EnrichFreshness.Strict,
-        named: "by-id",
+        named: "by_id",
         onMiss: EnrichMiss.Quarantine),
     quarantineFeed: "pipes.orders.quarantine");
 
