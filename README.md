@@ -121,6 +121,31 @@ locally, before any network call. The first catalog accessor issues ONE
 batched control read (`describe domain` + every `show` listing) and
 caches the snapshot — `RefreshAsync()` re-pulls.
 
+### Record schemas
+
+Records stay schema-neutral bytes on the wire; a Feed can still declare
+schema metadata the catalog tracks for tooling, validation, and
+compatibility. The Domain's schema is the default every Feed inherits;
+a Feed's own declaration overrides the named sides:
+
+```csharp
+await client.SetDomainSchemaAsync("shop",
+    new FeedSchema(Value: new SchemaDecl("json", Subject: "order-v1")));
+await client.SetFeedSchemaAsync("shop.orders",
+    new FeedSchema(Key: new SchemaDecl("text")));
+await shop.RefreshAsync();
+
+await shop.SchemaAsync();                      // the Domain default
+await shop.FeedSchemaAsync("shop.orders");     // effective: key=text, value=json/order-v1
+await shop.DeclaredFeedSchemaAsync("shop.orders");
+await client.ClearFeedSchemaAsync("shop.orders");  // reverts to inheritance
+```
+
+`SET SCHEMA ON DOMAIN|FEED <name> (KEY|VALUE <format> [SUBJECT 'x']
+[DEFINITION 'y'])+` in WCL does the same; `SHOW SCHEMAS` lists declared
+assignments. Formats today: `text`, `json`, `protobuf`, `avro`,
+`custom.<name>` — compatibility enforcement is still a no-op.
+
 ### Wire-level API
 
 The raw `byte[]` API stays available for full control:
