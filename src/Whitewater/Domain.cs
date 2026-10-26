@@ -168,6 +168,17 @@ public sealed class Domain
     /// <summary>Alias of <see cref="Feed(string)"/>.</summary>
     public Feed<string, byte[]> GetFeed(string relative) => Feed(relative);
 
+    /// <summary>
+    /// <c>CREATE FEED</c> inside this Domain —
+    /// <c>shop.CreateFeedAsync("orders")</c> declares
+    /// <c>shop.orders</c>. <see cref="RefreshAsync"/> (or a lazy
+    /// accessor's first load) surfaces it through
+    /// <see cref="FeedsAsync"/>/<see cref="FeedNamesAsync"/>.
+    /// </summary>
+    public Task<ControlExecution> CreateFeedAsync(
+        string relative, CancellationToken ct = default)
+        => _client.CreateFeedAsync(Resolve(relative), ct);
+
     internal string Resolve(string relative)
     {
         ArgumentNullException.ThrowIfNull(relative);

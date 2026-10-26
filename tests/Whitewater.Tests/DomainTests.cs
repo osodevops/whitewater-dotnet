@@ -37,6 +37,24 @@ public class DomainTests
     }
 
     [Fact]
+    public async Task CreateFeedScopesInsideTheDomain()
+    {
+        await using var riverbed = new FakeRiverbed();
+        var client = new WhitewaterClient("test-key", riverbed.Endpoints);
+
+        await client.CreateDomainAsync("shop");
+        var domain = await client.GetDomainAsync("shop");
+        await domain.CreateFeedAsync("orders");
+        await domain.RefreshAsync();
+
+        Assert.Equal("shop.orders", domain.Feed("orders").Name);
+        Assert.Contains("shop.orders", await domain.FeedNamesAsync());
+        // Relative names compose under the Domain — they can't escape
+        // into a sibling namespace.
+        Assert.Equal("shop.x.y", domain.Feed("x.y").Name);
+    }
+
+    [Fact]
     public async Task GetDomainMaterializesTheCatalogView()
     {
         await using var riverbed = new FakeRiverbed();

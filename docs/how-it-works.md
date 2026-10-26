@@ -83,13 +83,19 @@ statement and calls `WclAsync` internally:
 
 ```csharp
 await client.CreateDomainAsync("shop");              // CREATE DOMAIN shop;
-await client.CreateFeedAsync("shop.orders");         // CREATE FEED shop.orders;
+var shop = await client.GetDomainAsync("shop");      // verifies + materializes
+await shop.CreateFeedAsync("orders");                // CREATE FEED shop.orders;
 await client.CreateWriterAsync("orders.writer", "shop.orders");
 await client.OpenWriterSessionAsync("orders.writer");// epoch in .Data
 await client.CreateReaderAsync("audit", "shop.orders", ReaderStart.Beginning());
 await client.ListFeedsAsync();                       // SHOW FEEDS;
 await client.SeekReaderAsync("audit", ReaderStart.Now()); // SEEK ... TO NOW;
 await client.DropFeedAsync("shop.orders");           // DROP FEED shop.orders;
+```
+
+`client.CreateFeedAsync("shop.orders")` with the fully-qualified name is
+the flat-name equivalent; `domain.CreateFeedAsync("orders")` composes
+the Domain prefix for you.
 ```
 
 `client.CommandsAsync(...)` is the second door — the typed JSON

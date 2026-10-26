@@ -89,6 +89,7 @@ instead of composing dotted names by hand:
 ```csharp
 var shop = await client.GetDomainAsync("shop");   // verifies + materializes now
 // client.Domain("shop") is the lazy form — zero I/O until needed
+await shop.CreateFeedAsync("orders");         // CREATE FEED shop.orders;
 
 await shop.FeedNamesAsync();                       // ['shop.orders', ...]
 (await shop.FeedsAsync("order")).Select(f => f.Name); // prefix-filtered
@@ -154,7 +155,8 @@ The raw `byte[]` API stays available for full control:
 // Provision a Domain, Feed, Writer, and session — either typed
 // (each method builds its WCL statement for you):
 await client.CreateDomainAsync("shop");
-await client.CreateFeedAsync("shop.orders");
+var shopDomain = await client.GetDomainAsync("shop");
+await shopDomain.CreateFeedAsync("orders");   // = CreateFeedAsync("shop.orders")
 await client.CreateWriterAsync("orders-writer", "shop.orders");
 var setup = await client.OpenWriterSessionAsync("orders-writer");
 var sessionEpoch = setup.Results[0].Data["session_epoch"]!.GetValue<long>();
@@ -336,7 +338,7 @@ explicit escape hatches for the same wire contract.
 | Area | API |
 |---|---|
 | Client & transport | `new WhitewaterClient(apiKey, endpoints, timeout?)` · `HealthyAsync` · `UseCompression` on feeds/writers |
-| Typed Domains | `Domain(name)` lazy / `GetDomainAsync(name)` eager · `DomainIdAsync` `RevisionAsync` `DescribeAsync` `HistoryPolicyAsync` `RefreshAsync` · `FeedsAsync(prefix)` `FeedNamesAsync` `ReadersAsync` `WritersAsync` `SubscriptionsAsync` `PipeNamesAsync` `IndexesAsync` `StateStoresAsync` · `Feed(relative[, codec])` `GetFeed` |
+| Typed Domains | `Domain(name)` lazy / `GetDomainAsync(name)` eager · `DomainIdAsync` `RevisionAsync` `DescribeAsync` `HistoryPolicyAsync` `RefreshAsync` · `FeedsAsync(prefix)` `FeedNamesAsync` `ReadersAsync` `WritersAsync` `SubscriptionsAsync` `PipeNamesAsync` `IndexesAsync` `StateStoresAsync` · `Feed(relative[, codec])` `GetFeed` · `CreateFeedAsync(relative)` |
 | Schemas | `SetDomainSchemaAsync` `SetFeedSchemaAsync` `ClearDomainSchemaAsync` `ClearFeedSchemaAsync` · `Domain.SchemaAsync` `FeedSchemaAsync` `DeclaredFeedSchemaAsync` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
 | Feeds | `Feed(name)` / `Feed<TKey,TValue>` · `UseCompression` · `RecordsAsync` `FetchAsync` `LoadAsync` · `WriterAsync` `AppendAsync` `ReaderAsync` `Subscribe` `Consumer` `View<TK2,TV2>` |
 | Writing | `FeedWriter.AppendAsync(k, v)` `AppendEventAsync` `AppendAllAsync` · `UseCompression` `SessionEpoch` · idempotent `request_id` · `FeedEvent` carries event time + Metadata |
