@@ -61,6 +61,29 @@ public sealed class Domain
     public async Task<JsonObject?> HistoryPolicyAsync(CancellationToken ct = default)
         => (await SnapAsync(ct).ConfigureAwait(false)).Describe["history_policy"] as JsonObject;
 
+    /// <summary>The Domain's declared schema default — null when
+    /// undeclared. Every Feed without its own declaration inherits it.</summary>
+    public async Task<FeedSchema?> SchemaAsync(CancellationToken ct = default)
+        => FeedSchema.From(
+            (await SnapAsync(ct).ConfigureAwait(false)).Describe["schema"]);
+
+    /// <summary>The effective schema for a Feed — its declared sides
+    /// layered over the Domain default. Null when nothing is declared
+    /// anywhere (schema-neutral bytes).</summary>
+    public async Task<FeedSchema?> FeedSchemaAsync(string feed, CancellationToken ct = default)
+    {
+        var snap = await SnapAsync(ct).ConfigureAwait(false);
+        return snap.FeedSchemas.TryGetValue(feed, out var schema) ? schema : null;
+    }
+
+    /// <summary>Only the sides the Feed itself declares — null when it
+    /// inherits the Domain default wholesale.</summary>
+    public async Task<FeedSchema?> DeclaredFeedSchemaAsync(string feed, CancellationToken ct = default)
+    {
+        var snap = await SnapAsync(ct).ConfigureAwait(false);
+        return snap.DeclaredSchemas.TryGetValue(feed, out var schema) ? schema : null;
+    }
+
     // ---- scoped resources -------------------------------------------------
 
     /// <summary>Every Feed in this Domain as typed <see cref="Feed{TKey,TValue}"/>
@@ -211,12 +234,17 @@ public sealed class Domain
 
         var feeds = new List<string>();
         var feedIds = new HashSet<string>();
+        var feedSchemas = new Dictionary<string, FeedSchema?>();
+        var declaredSchemas = new Dictionary<string, FeedSchema?>();
         foreach (var row in Rows(results.Count > 1 ? results[1].Data : null))
         {
             if (row["space_id"]?.GetValue<string>() == domainId)
             {
-                feeds.Add(row["name"]!.GetValue<string>());
+                var name = row["name"]!.GetValue<string>();
+                feeds.Add(name);
                 feedIds.Add(row["feed_id"]!.GetValue<string>());
+                feedSchemas[name] = FeedSchema.From(row["effective_schema"]);
+                declaredSchemas[name] = FeedSchema.From(row["schema"]);
             }
         }
         feeds.Sort(StringComparer.Ordinal);
@@ -226,6 +254,8 @@ public sealed class Domain
             describe!,
             execution.Revision,
             feeds,
+            feedSchemas,
+            declaredSchemas,
             Scoped(results, 2, "feed_id", feedIds),
             Scoped(results, 3, "feed_id", feedIds),
             Scoped(results, 4, "space_id", new HashSet<string> { domainId }),
@@ -276,6 +306,8 @@ public sealed class Domain
         JsonObject Describe,
         long Revision,
         List<string> Feeds,
+        Dictionary<string, FeedSchema?> FeedSchemas,
+        Dictionary<string, FeedSchema?> DeclaredSchemas,
         List<string> Readers,
         List<string> Writers,
         List<string> Subscriptions,

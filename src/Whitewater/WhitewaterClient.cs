@@ -175,6 +175,57 @@ public sealed class WhitewaterClient
             .ConfigureAwait(false);
     }
 
+    // ---- record schemas -----------------------------------------------------
+
+    /// <summary><c>SET SCHEMA ON DOMAIN &lt;name&gt;</c> — the Domain's
+    /// inherited default.</summary>
+    public Task<ControlExecution> SetDomainSchemaAsync(
+        string domain, FeedSchema schema, CancellationToken ct = default)
+        => SetSchemaAsync("domain", domain, schema, ct);
+
+    /// <summary><c>SET SCHEMA ON FEED &lt;feed&gt;</c> — overrides the
+    /// named sides.</summary>
+    public Task<ControlExecution> SetFeedSchemaAsync(
+        string feed, FeedSchema schema, CancellationToken ct = default)
+        => SetSchemaAsync("feed", feed, schema, ct);
+
+    /// <summary><c>DROP SCHEMA ON DOMAIN &lt;name&gt;</c>.</summary>
+    public Task<ControlExecution> ClearDomainSchemaAsync(
+        string domain, CancellationToken ct = default)
+        => ClearSchemaAsync("domain", domain, ct);
+
+    /// <summary><c>DROP SCHEMA ON FEED &lt;feed&gt;</c> — the Feed
+    /// reverts to Domain inheritance.</summary>
+    public Task<ControlExecution> ClearFeedSchemaAsync(
+        string feed, CancellationToken ct = default)
+        => ClearSchemaAsync("feed", feed, ct);
+
+    private async Task<ControlExecution> SetSchemaAsync(
+        string kind, string name, FeedSchema schema, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        var command = new JsonObject
+        {
+            ["command"] = "set_schema",
+            ["scope"] = new JsonObject { ["kind"] = kind, ["name"] = Dotted(name) },
+            ["schema"] = schema.ToWire(),
+        };
+        return await CommandsAsync(new JsonObject[] { command }, ct: ct)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<ControlExecution> ClearSchemaAsync(
+        string kind, string name, CancellationToken ct)
+    {
+        var command = new JsonObject
+        {
+            ["command"] = "clear_schema",
+            ["scope"] = new JsonObject { ["kind"] = kind, ["name"] = Dotted(name) },
+        };
+        return await CommandsAsync(new JsonObject[] { command }, ct: ct)
+            .ConfigureAwait(false);
+    }
+
     // ---- Index queries ----------------------------------------------------------
 
     /// <summary>Query a replicated Index by predicate — exact, prefix, or

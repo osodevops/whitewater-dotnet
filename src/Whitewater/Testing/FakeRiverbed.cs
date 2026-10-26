@@ -63,6 +63,7 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
     private readonly Dictionary<string, ReaderState> _readers = new();
     private readonly Dictionary<string, StoreState> _stores = new();
     private readonly Dictionary<string, DomainState> _domains = new();
+    private readonly Dictionary<string, JsonObject> _schemas = new();
     private readonly Dictionary<string, Guid> _roles = new();
     private readonly Dictionary<string, SubscriptionState> _subscriptions = new();
     private readonly Dictionary<string, (int Status, string Body)> _adminDedup = new();
@@ -1485,6 +1486,42 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                 reader.DeliverIndex = index;
                 return new JsonObject { ["name"] = name };
             }
+            case "SET" when tokens.Count > 5
+                && kind == "SCHEMA" && tokens[2].Equals("ON", StringComparison.OrdinalIgnoreCase):
+            {
+                // SET SCHEMA ON DOMAIN|FEED <name> (KEY|VALUE <fmt> [SUBJECT 's'] [DEFINITION 'd'])+
+                var scope = tokens[3].ToLowerInvariant() + ":" + tokens[4];
+                if (!_schemas.TryGetValue(scope, out var schema))
+                {
+                    schema = new JsonObject();
+                }
+                var at = 5;
+                while (at + 1 < tokens.Count
+                    && (tokens[at].Equals("KEY", StringComparison.OrdinalIgnoreCase)
+                        || tokens[at].Equals("VALUE", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var side = tokens[at].ToLowerInvariant();
+                    var decl = new JsonObject { ["format"] = tokens[at + 1].ToLowerInvariant() };
+                    at += 2;
+                    while (at + 1 < tokens.Count
+                        && (tokens[at].Equals("SUBJECT", StringComparison.OrdinalIgnoreCase)
+                            || tokens[at].Equals("DEFINITION", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        decl[tokens[at].ToLowerInvariant()] =
+                            tokens[at + 1].Trim("'".ToCharArray()).Replace("''", "'");
+                        at += 2;
+                    }
+                    schema[side] = decl;
+                }
+                _schemas[scope] = schema;
+                return schema;
+            }
+            case "DROP" when tokens.Count > 4
+                && kind == "SCHEMA" && tokens[2].Equals("ON", StringComparison.OrdinalIgnoreCase):
+            {
+                _schemas.Remove(tokens[3].ToLowerInvariant() + ":" + tokens[4]);
+                return new JsonObject();
+            }
             case "DROP" when tokens.Count > 2:
             {
                 var name = tokens[2];
@@ -1585,6 +1622,8 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                     ["domain_id"] = d.Id.ToString(),
                     ["status"] = "active",
                     ["created_at_ns"] = d.CreatedAtNs.ToString(),
+                    ["schema"] = _schemas.TryGetValue("domain:" + name, out var ds)
+                        ? ds.DeepClone() : null,
                 };
             }
             case "FEED":
@@ -1598,6 +1637,9 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                     ["space_id"] = SpaceIdOf(name),
                     ["status"] = "active",
                     ["created_at_ns"] = f.CreatedAtNs.ToString(),
+                    ["schema"] = _schemas.TryGetValue("feed:" + name, out var fs)
+                        ? fs.DeepClone() : null,
+                    ["effective_schema"] = EffectiveSchema(name)?.DeepClone(),
                 };
             }
             case "WRITER":
@@ -1682,6 +1724,29 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
 
     /// <summary><c>DESCRIBE &lt;kind&gt; &lt;name&gt;</c> — the row, or a
     /// refusal when missing.</summary>
+    /// <summary>The feed's declared schema layered over its Domain's —
+    /// the feed's sides win; missing sides inherit.</summary>
+    private JsonObject? EffectiveSchema(string feedName)
+    {
+        _schemas.TryGetValue("feed:" + feedName, out var own);
+        var domain = feedName.Split('.')[0];
+        _schemas.TryGetValue("domain:" + domain, out var inherited);
+        if (own is null)
+        {
+            return inherited;
+        }
+        if (inherited is null)
+        {
+            return own;
+        }
+        var merged = (JsonObject)inherited.DeepClone();
+        foreach (var side in own)
+        {
+            merged[side.Key] = side.Value?.DeepClone();
+        }
+        return merged;
+    }
+
     private JsonObject Describe(string kind, string name)
     {
         var known = kind switch
@@ -1714,10 +1779,24 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
             "WRITERS" => _writers.Keys,
             "READERS" => _readers.Keys,
             "SUBSCRIPTIONS" => _subscriptions.Keys,
+            "SCHEMAS" => _schemas.Keys.Select(k => k),
             "STATESTORES" or "STATE_STORES" => _stores.Keys,
             _ => Array.Empty<string>(),
         };
         var rows = new JsonArray();
+        if (kind == "SCHEMAS")
+        {
+            foreach (var key in names.OrderBy(n => n, StringComparer.Ordinal))
+            {
+                rows.Add(new JsonObject
+                {
+                    ["scope_kind"] = key.Split(':')[0],
+                    ["name"] = string.Join(':', key.Split(':').Skip(1)),
+                    ["schema"] = _schemas[key].DeepClone(),
+                });
+            }
+            return rows;
+        }
         foreach (var name in names.OrderBy(n => n, StringComparer.Ordinal))
         {
             rows.Add(ResourceRow(kind, name));
@@ -1784,6 +1863,23 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                     ["status"] = "ok",
                     ["created_at_ns"] = NowNs(),
                 };
+            }
+            case "set_schema":
+            {
+                var scope = command["scope"] as JsonObject;
+                var key = scope?["kind"]?.GetValue<string>() + ":"
+                    + scope?["name"]?.GetValue<string>();
+                _schemas[key] = (JsonObject)(command["schema"]?.DeepClone()
+                    ?? new JsonObject());
+                return new JsonObject();
+            }
+            case "clear_schema":
+            {
+                var scope = command["scope"] as JsonObject;
+                _schemas.Remove(
+                    scope?["kind"]?.GetValue<string>() + ":"
+                    + scope?["name"]?.GetValue<string>());
+                return new JsonObject();
             }
             case "describe":
                 return Describe(

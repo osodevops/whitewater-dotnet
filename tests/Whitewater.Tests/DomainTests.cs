@@ -213,4 +213,92 @@ public class DomainTests
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => client.CreateWriter(shop, "orders").DeclareAsync());
     }
+
+    [Fact]
+    public async Task FeedSchemaLayersTheFeedOverrideOverTheDomainDefault()
+    {
+        await using var riverbed = new FakeRiverbed();
+        var client = new WhitewaterClient("test-key", riverbed.Endpoints);
+        var shop = await Seeded(client);
+
+        await client.SetDomainSchemaAsync("shop",
+            new FeedSchema(Value: new SchemaDecl("json", Subject: "order-v1")));
+        await client.SetFeedSchemaAsync("shop.orders",
+            new FeedSchema(Key: new SchemaDecl("text")));
+        await shop.RefreshAsync();
+
+        var domain = await shop.SchemaAsync();
+        Assert.Equal("json", domain!.Value!.Format);
+        Assert.Equal("order-v1", domain.Value.Subject);
+
+        var effective = await shop.FeedSchemaAsync("shop.orders");
+        Assert.Equal("text", effective!.Key!.Format);
+        Assert.Equal("json", effective.Value!.Format);
+        var declared = await shop.DeclaredFeedSchemaAsync("shop.orders");
+        Assert.Equal("text", declared!.Key!.Format);
+        Assert.Null(declared.Value);
+
+        var inherited = await shop.FeedSchemaAsync("shop.returns");
+        Assert.Equal("json", inherited!.Value!.Format);
+        Assert.Null(inherited.Key);
+        Assert.Null(await shop.DeclaredFeedSchemaAsync("shop.returns"));
+    }
+
+    [Fact]
+    public async Task ClearFeedSchemaRevertsToDomainInheritance()
+    {
+        await using var riverbed = new FakeRiverbed();
+        var client = new WhitewaterClient("test-key", riverbed.Endpoints);
+        var shop = await Seeded(client);
+
+        await client.SetDomainSchemaAsync("shop",
+            new FeedSchema(Value: new SchemaDecl("json")));
+        await client.SetFeedSchemaAsync("shop.orders",
+            new FeedSchema(Value: new SchemaDecl("avro")));
+        await shop.RefreshAsync();
+        Assert.Equal("avro",
+            (await shop.FeedSchemaAsync("shop.orders"))!.Value!.Format);
+
+        await client.ClearFeedSchemaAsync("shop.orders");
+        await shop.RefreshAsync();
+        Assert.Equal("json",
+            (await shop.FeedSchemaAsync("shop.orders"))!.Value!.Format);
+        Assert.Null(await shop.DeclaredFeedSchemaAsync("shop.orders"));
+    }
+
+    [Fact]
+    public async Task SetSchemaOverWclShowSchemasAndDescribeFeedAgree()
+    {
+        await using var riverbed = new FakeRiverbed();
+        var client = new WhitewaterClient("test-key", riverbed.Endpoints);
+        var shop = await Seeded(client);
+
+        await client.WclAsync(
+            "SET SCHEMA ON DOMAIN shop VALUE json SUBJECT 'order-v1';" +
+            " SET SCHEMA ON FEED shop.orders KEY protobuf DEFINITION 'syntax = proto3'");
+        var rows = (await client.WclAsync("SHOW SCHEMAS")).Results[0].Data
+            as System.Text.Json.Nodes.JsonArray;
+        Assert.NotNull(rows);
+        var byScope = rows!.OfType<System.Text.Json.Nodes.JsonObject>()
+            .ToDictionary(r => r["scope_kind"]!.GetValue<string>() + ":" + r["name"]!.GetValue<string>(),
+                          r => r["schema"] as System.Text.Json.Nodes.JsonObject);
+        Assert.Equal("order-v1",
+            byScope["domain:shop"]!["value"]!["subject"]!.GetValue<string>());
+        Assert.Equal("protobuf",
+            byScope["feed:shop.orders"]!["key"]!["format"]!.GetValue<string>());
+
+        var described = (await client.CommandsAsync(new System.Text.Json.Nodes.JsonObject[]
+        {
+            new() { ["command"] = "describe", ["kind"] = "feed", ["name"] = "shop.orders" },
+        })).Results[0].Data as System.Text.Json.Nodes.JsonObject;
+        Assert.Equal("protobuf",
+            described!["schema"]!["key"]!["format"]!.GetValue<string>());
+        Assert.Equal("json",
+            described["effective_schema"]!["value"]!["format"]!.GetValue<string>());
+
+        await shop.RefreshAsync();
+        var effective = await shop.FeedSchemaAsync("shop.orders");
+        Assert.Equal("protobuf", effective!.Key!.Format);
+        Assert.Equal("json", effective.Value!.Format);
+    }
 }
