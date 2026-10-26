@@ -6,6 +6,8 @@ developer-friendly, platform-scalable streaming system written in Rust.
 Targets .NET 8. Zero external dependencies: `System.Net.Http` for
 transport, `System.Text.Json` for the wire codec.
 
+A complete microservice walkthrough — provision, produce, pump-process, dead-letter, shutdown — lives in [`docs/demo-service.md`](docs/demo-service.md).
+
 ## Concepts
 
 Whitewater exposes `domain -> feed -> key -> cursor -> subscription`.
