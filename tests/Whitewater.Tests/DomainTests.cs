@@ -55,6 +55,82 @@ public class DomainTests
     }
 
     [Fact]
+    public async Task DomainHangingBuildersComposeAndOpen()
+    {
+        await using var riverbed = new FakeRiverbed();
+        var client = new WhitewaterClient("test-key", riverbed.Endpoints);
+
+        await client.CreateDomainAsync("shop");
+        var shop = await client.GetDomainAsync("shop");
+        await shop.CreateFeedAsync("orders");
+
+        var writer = await shop.CreateWriter("orders").WriterId("ingest").OpenAsync();
+        await writer.AppendAsync("order-1", Encoding.UTF8.GetBytes("1"));
+
+        await using var reader = await shop.CreateReader("orders")
+            .ReaderId("fulfillment")
+            .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
+            .OpenAsync();
+        var page = await reader.FetchAsync();
+        Assert.Equal("order-1", page.Records[0].Key);
+    }
+
+    [Fact]
+    public async Task ReaderForEachAcksHandledPagesAndReplaysTheTail()
+    {
+        await using var riverbed = new FakeRiverbed();
+        var client = new WhitewaterClient("test-key", riverbed.Endpoints);
+        await client.CreateFeedAsync("shop.orders");
+        var shop = client.Domain("shop");
+
+        var writer = await shop.CreateWriter("orders").WriterId("w").OpenAsync();
+        await writer.AppendAsync("a", Encoding.UTF8.GetBytes("1"));
+        await writer.AppendAsync("b", Encoding.UTF8.GetBytes("2"));
+
+        var reader = await shop.CreateReader("orders")
+            .ReaderId("pump")
+            .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
+            .Capacity(1)
+            .OpenAsync();
+        var seen = new List<string?>();
+        await reader.ForEachAsync(m =>
+        {
+            seen.Add(m.Key);
+            return ValueTask.FromResult(seen.Count < 2);
+        });
+        Assert.Equal(new string?[] { "a", "b" }, seen);
+        var page = await reader.FetchAsync();           // cursor state echoes the commit
+        Assert.NotNull(page.AcknowledgedCursor);        // page 1 committed
+        await reader.CloseAsync();
+
+        // The unacked tail replays on the next open.
+        await using var again = await shop.CreateReader("orders").ReaderId("pump").OpenAsync();
+        Assert.Equal("b", (await again.FetchAsync()).Records[0].Key);
+    }
+
+    [Fact]
+    public async Task ReaderMessagesAsyncStreamsPerPage()
+    {
+        await using var riverbed = new FakeRiverbed();
+        var client = new WhitewaterClient("test-key", riverbed.Endpoints);
+        await client.CreateFeedAsync("shop.orders");
+        var shop = client.Domain("shop");
+
+        var writer = await shop.CreateWriter("orders").WriterId("w").OpenAsync();
+        await writer.AppendAsync("a", Encoding.UTF8.GetBytes("1"));
+
+        await using var reader = await shop.CreateReader("orders")
+            .ReaderId("iter")
+            .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
+            .OpenAsync();
+        await foreach (var m in reader.MessagesAsync())
+        {
+            Assert.Equal("a", m.Key);
+            break;                      // page unacked → replays later
+        }
+    }
+
+    [Fact]
     public async Task GetDomainMaterializesTheCatalogView()
     {
         await using var riverbed = new FakeRiverbed();

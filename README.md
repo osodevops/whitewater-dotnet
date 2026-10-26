@@ -97,18 +97,23 @@ await shop.ReadersAsync(); await shop.WritersAsync(); // scoped views
 
 var orders = shop.Feed("orders", Codecs.Json<Order>());
 
-var writer = await client
-    .CreateWriter(shop, orders)
+// Everything a service needs hangs off the Domain — relative names
+// resolve inside it:
+var writer = await shop
+    .CreateWriter("orders")
     .WriterId("orders.ingest")
     .OpenAsync();
 await writer.AppendAsync("order-1", new Order("order-1", 42));
 
-await using var reader = await client
-    .CreateReader(shop, orders)
+await using var reader = await shop
+    .CreateReader("orders")
     .ReaderId("fulfillment")                              // durable id — the Kafka groupId analogue
     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning) // first-declare only
     .Capacity(256)
     .OpenAsync();
+await reader.ForEachAsync(async m => { await handle(m.Value); return true; });
+// or stream: `await foreach (var m in reader.MessagesAsync(ct))` — same
+// ack-per-page semantics; or stay manual: FetchAsync → handle → AckAsync
 var page = await reader.FetchAsync();
 await reader.AckAsync();
 ```
@@ -338,11 +343,11 @@ explicit escape hatches for the same wire contract.
 | Area | API |
 |---|---|
 | Client & transport | `new WhitewaterClient(apiKey, endpoints, timeout?)` · `HealthyAsync` · `UseCompression` on feeds/writers |
-| Typed Domains | `Domain(name)` lazy / `GetDomainAsync(name)` eager · `DomainIdAsync` `RevisionAsync` `DescribeAsync` `HistoryPolicyAsync` `RefreshAsync` · `FeedsAsync(prefix)` `FeedNamesAsync` `ReadersAsync` `WritersAsync` `SubscriptionsAsync` `PipeNamesAsync` `IndexesAsync` `StateStoresAsync` · `Feed(relative[, codec])` `GetFeed` · `CreateFeedAsync(relative)` |
+| Typed Domains | `Domain(name)` lazy / `GetDomainAsync(name)` eager · `DomainIdAsync` `RevisionAsync` `DescribeAsync` `HistoryPolicyAsync` `RefreshAsync` · `FeedsAsync(prefix)` `FeedNamesAsync` `ReadersAsync` `WritersAsync` `SubscriptionsAsync` `PipeNamesAsync` `IndexesAsync` `StateStoresAsync` · `Feed(relative[, codec])` `GetFeed` · `CreateFeedAsync` `CreateReader` `CreateWriter` (relative/Feed) |
 | Schemas | `SetDomainSchemaAsync` `SetFeedSchemaAsync` `ClearDomainSchemaAsync` `ClearFeedSchemaAsync` · `Domain.SchemaAsync` `FeedSchemaAsync` `DeclaredFeedSchemaAsync` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
 | Feeds | `Feed(name)` / `Feed<TKey,TValue>` · `UseCompression` · `RecordsAsync` `FetchAsync` `LoadAsync` · `WriterAsync` `AppendAsync` `ReaderAsync` `Subscribe` `Consumer` `View<TK2,TV2>` |
 | Writing | `FeedWriter.AppendAsync(k, v)` `AppendEventAsync` `AppendAllAsync` · `UseCompression` `SessionEpoch` · idempotent `request_id` · `FeedEvent` carries event time + Metadata |
-| Reading | `FeedReader.FetchAsync(limit)` `AckAsync([cursor])` `CloseAsync`/`DisposeAsync` · `SessionEpoch` · durable `readerId` · `ReaderStart` / `FirstTimeReaderStartPosition` (`Beginning`, `End`, `Now`, cursor, timestamp) |
+| Reading | `FeedReader.ForEachAsync`/`MessagesAsync(ct)` pump · `FetchAsync(limit)` `AckAsync([cursor])` `CloseAsync`/`DisposeAsync` · `SessionEpoch` · durable `readerId` · `ReaderStart` / `FirstTimeReaderStartPosition` (`Beginning`, `End`, `Now`, cursor, timestamp) |
 | Temporary fetches | `Feed.FetchAsync` / `Feeds.TemporaryFetchAsync` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `LoadAsync` |
 | Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `WithCapacity` `OnRecord` `OnError` `WithBackoff` `LastError` `Failure` `IsRunning` · `Messages` (IAsyncEnumerable) / `RunAsync` / `DisposeAsync` |
 | Subscription members | `SubscriptionMember(name)` → `JoinAsync` `ClaimAsync` `RenewAsync` `ReleaseAsync` `FetchAsync` `AckAsync` — shared progress + RF3 work leases · `Feed.Subscribe` managed loop (`Subscription.Failure`) |

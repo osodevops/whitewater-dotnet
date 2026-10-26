@@ -179,6 +179,40 @@ public sealed class Domain
         string relative, CancellationToken ct = default)
         => _client.CreateFeedAsync(Resolve(relative), ct);
 
+    /// <summary>
+    /// Fluent Reader declaration on <paramref name="relative"/> inside
+    /// this Domain — <c>shop.CreateReader("orders")</c> binds
+    /// <c>shop.orders</c>:
+    /// <code>
+    /// var reader = await shop.CreateReader("orders")
+    ///     .ReaderId("fulfillment")              // the Kafka groupId analogue
+    ///     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
+    ///     .OpenAsync();
+    /// </code>
+    /// </summary>
+    public ReaderBuilder<string, byte[]> CreateReader(string relative)
+        => _client.CreateReader(this, relative);
+
+    /// <summary><see cref="CreateReader(string)"/> on an explicit
+    /// typed handle.</summary>
+    public ReaderBuilder<TKey, TValue> CreateReader<TKey, TValue>(
+        Feed<TKey, TValue> feed)
+        => _client.CreateReader(this, feed);
+
+    /// <summary>
+    /// Fluent Writer declaration on <paramref name="relative"/> inside
+    /// this Domain — <c>shop.CreateWriter("orders")</c> binds
+    /// <c>shop.orders</c>.
+    /// </summary>
+    public WriterBuilder<string, byte[]> CreateWriter(string relative)
+        => _client.CreateWriter(this, relative);
+
+    /// <summary><see cref="CreateWriter(string)"/> on an explicit
+    /// typed handle.</summary>
+    public WriterBuilder<TKey, TValue> CreateWriter<TKey, TValue>(
+        Feed<TKey, TValue> feed)
+        => _client.CreateWriter(this, feed);
+
     internal string Resolve(string relative)
     {
         ArgumentNullException.ThrowIfNull(relative);

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Whitewater.Internal;
 
 namespace Whitewater;
@@ -171,6 +172,62 @@ public sealed class FeedReader<TKey, TValue> : IAsyncDisposable
     {
         _session = await _client.AckAsync(_session, cursor, ct: ct).ConfigureAwait(false);
         return _session;
+    }
+
+    /// <summary>
+    /// Deliver every record to <paramref name="handler"/> — one at a
+    /// time — acking each fetched page after its records are handled.
+    /// The pump paces empty fetches on the server's
+    /// <c>retry_after_ms</c> and exits when the reader is closed or
+    /// <paramref name="ct"/> is cancelled. A handler returning
+    /// <c>false</c> — or throwing — leaves the in-flight page unacked
+    /// so its tail replays: at-least-once delivery, never acknowledge
+    /// undelivered records.
+    /// </summary>
+    public async Task ForEachAsync(
+        Func<FeedMessage<TKey, TValue>, ValueTask<bool>> handler,
+        CancellationToken ct = default)
+    {
+        while (!_closed)
+        {
+            ct.ThrowIfCancellationRequested();
+            var page = await FetchAsync(ct: ct).ConfigureAwait(false);
+            if (page.Records.Count == 0)
+            {
+                await Task.Delay(Math.Max(1, page.RetryAfterMs), ct)
+                    .ConfigureAwait(false);
+                continue;
+            }
+            foreach (var message in page.Records)
+            {
+                if (!await handler(message).ConfigureAwait(false)) return;
+            }
+            if (_closed) return;
+            await AckAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Records as an async stream — <c>await foreach (var m in
+    /// reader.MessagesAsync(ct))</c> — acking each page once consumed.
+    /// Breaking out leaves the in-flight page unacked so its tail
+    /// replays.</summary>
+    public async IAsyncEnumerable<FeedMessage<TKey, TValue>> MessagesAsync(
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        while (!_closed)
+        {
+            ct.ThrowIfCancellationRequested();
+            var page = await FetchAsync(ct: ct).ConfigureAwait(false);
+            if (page.Records.Count == 0)
+            {
+                await Task.Delay(Math.Max(1, page.RetryAfterMs), ct)
+                    .ConfigureAwait(false);
+                continue;
+            }
+            foreach (var message in page.Records) yield return message;
+            if (_closed) yield break;
+            await AckAsync(ct).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Release the session fence; durable acknowledged
