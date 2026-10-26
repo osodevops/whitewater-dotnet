@@ -580,8 +580,8 @@ public sealed class WhitewaterClient
         ReaderStart start,
         Func<IReadOnlyList<FeedRecord>, Task> onRecords,
         Action<WhitewaterException>? onError = null,
-        int capacity = SubscribeCapacity)
-        => new(this, reader, feed, start, capacity, onRecords, onError);
+        int maxPageSize = SubscribeCapacity)
+        => new(this, reader, feed, start, maxPageSize, onRecords, onError);
 
     /// <summary>
     /// A codec-bound Feed facade — serialization is bound once so every

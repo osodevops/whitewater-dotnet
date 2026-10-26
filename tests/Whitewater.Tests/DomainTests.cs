@@ -90,7 +90,7 @@ public class DomainTests
         var reader = await shop.CreateReader("orders")
             .ReaderId("pump")
             .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
-            .Capacity(1)
+            .MaxPageSize(1)
             .OpenAsync();
         var seen = new List<string?>();
         await reader.ForEachAsync(m =>

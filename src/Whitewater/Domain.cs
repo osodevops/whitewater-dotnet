@@ -20,7 +20,7 @@ namespace Whitewater;
 ///     .CreateReader(shop, shop.Feed("orders"))
 ///     .ReaderId("fulfillment")                       // the Kafka groupId analogue
 ///     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
-///     .Capacity(256)
+///     .MaxPageSize(256)
 ///     .OpenAsync();
 /// </code>
 /// The first catalog accessor issues ONE batched control read
@@ -389,7 +389,7 @@ public sealed class ReaderBuilder<TKey, TValue>
     private readonly Feed<TKey, TValue> _feed;
     private string? _readerId;
     private ReaderStart _start = ReaderStart.Beginning();
-    private int _capacity = 128;
+    private int _maxPageSize = 128;
 
     internal ReaderBuilder(WhitewaterClient client, Domain domain, Feed<TKey, TValue> feed)
     {
@@ -426,14 +426,14 @@ public sealed class ReaderBuilder<TKey, TValue>
         return this;
     }
 
-    /// <summary>Bounded fetch page capacity — the default is 128.</summary>
-    public ReaderBuilder<TKey, TValue> Capacity(int capacity)
+    /// <summary>Max records delivered per fetch page — the default is 128.</summary>
+    public ReaderBuilder<TKey, TValue> MaxPageSize(int maxPageSize)
     {
-        if (capacity <= 0)
+        if (maxPageSize <= 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(capacity), "capacity must be positive");
+            throw new ArgumentOutOfRangeException(nameof(maxPageSize), "maxPageSize must be positive");
         }
-        _capacity = capacity;
+        _maxPageSize = maxPageSize;
         return this;
     }
 
@@ -447,7 +447,7 @@ public sealed class ReaderBuilder<TKey, TValue>
     /// session, and bind the Feed's codecs — <c>FetchAsync</c> returns
     /// decoded <see cref="FeedMessage{TKey,TValue}"/>s.</summary>
     public Task<FeedReader<TKey, TValue>> OpenAsync(CancellationToken ct = default)
-        => _feed.ReaderAsync(RequireId(), _capacity, _start, ct);
+        => _feed.ReaderAsync(RequireId(), _maxPageSize, _start, ct);
 
     private string RequireId()
         => _readerId ?? throw new InvalidOperationException(

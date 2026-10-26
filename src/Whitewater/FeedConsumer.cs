@@ -45,7 +45,7 @@ public sealed class FeedConsumer<TKey, TValue> : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
 
     private ReaderStart _start = ReaderStart.Beginning();
-    private int _capacity = 128;
+    private int _maxPageSize = 128;
     private TimeSpan _initialBackoff = TimeSpan.FromMilliseconds(250);
     private TimeSpan _maxBackoff = TimeSpan.FromSeconds(30);
     private Func<FeedMessage<TKey, TValue>, ValueTask>? _onRecord;
@@ -83,10 +83,10 @@ public sealed class FeedConsumer<TKey, TValue> : IAsyncDisposable
         return this;
     }
 
-    /// <summary>Records fetched per page (default 128).</summary>
-    public FeedConsumer<TKey, TValue> WithCapacity(int capacity)
+    /// <summary>Max records delivered per page (default 128).</summary>
+    public FeedConsumer<TKey, TValue> WithMaxPageSize(int maxPageSize)
     {
-        _capacity = capacity;
+        _maxPageSize = maxPageSize;
         return this;
     }
 
@@ -240,7 +240,7 @@ public sealed class FeedConsumer<TKey, TValue> : IAsyncDisposable
                 Exception? handlerError = null;
                 Exception? disposeError = null;
                 var sub = _feed.SubscribeDecoded(
-                    Reader, _start, _capacity,
+                    Reader, _start, _maxPageSize,
                     async messages =>
                     {
                         foreach (var message in messages)

@@ -364,11 +364,11 @@ public sealed class Feed<TKey, TValue>
     /// A session-bound named Reader on this Feed: declares the Reader
     /// when missing (at <paramref name="start"/>, default BEGINNING —
     /// an existing declaration keeps its own start and durable
-    /// progress), opens a session with the bounded fetch capacity, and
+    /// progress), opens a session with the bounded page size, and
     /// returns decoded messages.
     /// </summary>
     public async Task<FeedReader<TKey, TValue>> ReaderAsync(
-        string readerName, int capacity = 64, ReaderStart? start = null,
+        string readerName, int maxPageSize = 64, ReaderStart? start = null,
         CancellationToken ct = default)
     {
         try
@@ -381,7 +381,7 @@ public sealed class Feed<TKey, TValue>
         {
             // An existing Reader is reused as-is.
         }
-        var session = await _client.Reader(readerName).OpenAsync(capacity, ct: ct)
+        var session = await _client.Reader(readerName).OpenAsync(maxPageSize, ct: ct)
             .ConfigureAwait(false);
         return new FeedReader<TKey, TValue>(
             _client.Reader(readerName), session, _keyCodec, _valueCodec);
@@ -412,17 +412,17 @@ public sealed class Feed<TKey, TValue>
         Action<WhitewaterException>? onError = null)
         => SubscribeDecoded(reader, start, null, onRecords, onError);
 
-    /// <summary>Decoded subscribe with capacity override — the
+    /// <summary>Decoded subscribe with page-size override — the
     /// FeedConsumer seam.</summary>
     internal Subscription SubscribeDecoded(
         string reader,
         ReaderStart start,
-        int? capacity,
+        int? maxPageSize,
         Func<IReadOnlyList<FeedMessage<TKey, TValue>>, Task> onRecords,
         Action<WhitewaterException>? onError = null)
         => _client.Subscribe(reader, Name, start,
             records => onRecords(DecodeMessages(records)), onError,
-            capacity ?? 128);
+            maxPageSize ?? 128);
 
     /// <summary>A permanent, supervised consumer bound to this Feed's
     /// named Reader — iterate decoded records via

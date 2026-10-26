@@ -46,7 +46,7 @@ await writer.AppendEventAsync(new FeedEvent<string, Order>(
     order, "order-42", requestId: Guid.NewGuid(),
     metadata: Codecs.TextMetadata(new() { ["source"] = "api" })));
 
-await using var reader = await orders.ReaderAsync("audit", capacity: 64);
+await using var reader = await orders.ReaderAsync("audit", maxPageSize: 64);
 var page = await reader.FetchAsync();
 foreach (var m in page.Records) Console.WriteLine($"{m.Key} {m.Value.Total}");
 await reader.AckAsync();
@@ -109,7 +109,7 @@ await using var reader = await shop
     .CreateReader("orders")
     .ReaderId("fulfillment")                              // durable id — the Kafka groupId analogue
     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning) // first-declare only
-    .Capacity(256)
+    .MaxPageSize(256)
     .OpenAsync();
 await reader.ForEachAsync(async m => { await handle(m.Value); return true; });
 // or stream: `await foreach (var m in reader.MessagesAsync(ct))` — same
@@ -180,7 +180,7 @@ var appended = await writer.AppendAsync(
 
 // Independent durable reader.
 var reader = client.Reader("orders-reader");
-var session = await reader.OpenAsync(capacity: 64);
+var session = await reader.OpenAsync(maxPageSize: 64);
 var page = await reader.FetchAsync(session);
 foreach (var record in page.Records)
 {
@@ -349,7 +349,7 @@ explicit escape hatches for the same wire contract.
 | Writing | `FeedWriter.AppendAsync(k, v)` `AppendEventAsync` `AppendAllAsync` · `UseCompression` `SessionEpoch` · idempotent `request_id` · `FeedEvent` carries event time + Metadata |
 | Reading | `FeedReader.ForEachAsync`/`MessagesAsync(ct)` pump · `FetchAsync(limit)` `AckAsync([cursor])` `CloseAsync`/`DisposeAsync` · `SessionEpoch` · durable `readerId` · `ReaderStart` / `FirstTimeReaderStartPosition` (`Beginning`, `End`, `Now`, cursor, timestamp) |
 | Temporary fetches | `Feed.FetchAsync` / `Feeds.TemporaryFetchAsync` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `LoadAsync` |
-| Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `WithCapacity` `OnRecord` `OnError` `WithBackoff` `LastError` `Failure` `IsRunning` · `Messages` (IAsyncEnumerable) / `RunAsync` / `DisposeAsync` |
+| Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `WithMaxPageSize` `OnRecord` `OnError` `WithBackoff` `LastError` `Failure` `IsRunning` · `Messages` (IAsyncEnumerable) / `RunAsync` / `DisposeAsync` |
 | Subscription members | `SubscriptionMember(name)` → `JoinAsync` `ClaimAsync` `RenewAsync` `ReleaseAsync` `FetchAsync` `AckAsync` — shared progress + RF3 work leases · `Feed.Subscribe` managed loop (`Subscription.Failure`) |
 | StateStores | `StateStore(name)` / typed `Store<TKey,TValue>`: `PutAsync` `GetAsync` `GetByAsync` `FindAsync` `FindByAsync` `GetOrDefaultAsync` `DeleteAsync` `PageAsync` `IterateAsync` (IAsyncEnumerable) `ClearAsync` `DropAsync` `Raw` `View` · `StateStores.DefineAsync` `DropAsync` |
 | Indexes | `QueryIndexAsync(name, IndexPredicate)` → `IndexPage` · `IndexPredicate.Exact/Prefix/Range` + `IndexBound.InclusiveBound/ExclusiveBound` |

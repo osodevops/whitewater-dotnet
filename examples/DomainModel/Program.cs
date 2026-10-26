@@ -47,7 +47,7 @@ await using var reader = await client
     .CreateReader(shop, orders)
     .ReaderId("fulfillment") // durable id — the Kafka groupId analogue
     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning) // first-declare only
-    .Capacity(256)
+    .MaxPageSize(256)
     .OpenAsync();
 var page = await reader.FetchAsync();
 foreach (var record in page.Records)
