@@ -64,8 +64,8 @@ public class DomainTests
         var shop = await client.GetDomainAsync("shop");
         await shop.CreateFeedAsync("orders");
 
-        var writer = await shop.CreateWriter("orders").WriterId("ingest").OpenAsync();
-        await writer.AppendAsync("order-1", Encoding.UTF8.GetBytes("1"));
+        var writer = await shop.CreateWriter(shop.Feed("orders", Codecs.Utf8)).WriterId("ingest").OpenAsync();
+        await writer.AppendAsync("order-1", "1");
 
         await using var reader = await shop.CreateReader("orders")
             .ReaderId("fulfillment")
@@ -83,9 +83,9 @@ public class DomainTests
         await client.CreateFeedAsync("shop.orders");
         var shop = client.Domain("shop");
 
-        var writer = await shop.CreateWriter("orders").WriterId("w").OpenAsync();
-        await writer.AppendAsync("a", Encoding.UTF8.GetBytes("1"));
-        await writer.AppendAsync("b", Encoding.UTF8.GetBytes("2"));
+        var writer = await shop.CreateWriter(shop.Feed("orders", Codecs.Utf8)).WriterId("w").OpenAsync();
+        await writer.AppendAsync("a", "1");
+        await writer.AppendAsync("b", "2");
 
         var reader = await shop.CreateReader("orders")
             .ReaderId("pump")
@@ -116,8 +116,8 @@ public class DomainTests
         await client.CreateFeedAsync("shop.orders");
         var shop = client.Domain("shop");
 
-        var writer = await shop.CreateWriter("orders").WriterId("w").OpenAsync();
-        await writer.AppendAsync("a", Encoding.UTF8.GetBytes("1"));
+        var writer = await shop.CreateWriter(shop.Feed("orders", Codecs.Utf8)).WriterId("w").OpenAsync();
+        await writer.AppendAsync("a", "1");
 
         await using var reader = await shop.CreateReader("orders")
             .ReaderId("iter")
@@ -221,10 +221,10 @@ public class DomainTests
 
         var shop = client.Domain("shop");
         var writer = await client
-            .CreateWriter(shop, "orders")
+            .CreateWriter(shop, shop.Feed("orders", Codecs.Utf8))
             .WriterId("orders.ingest")
             .OpenAsync();
-        await writer.AppendAsync("order-1", Encoding.UTF8.GetBytes("{\"total\":9}"));
+        await writer.AppendAsync("order-1", "{\"total\":9}");
 
         await using var reader = await client
             .CreateReader(shop, shop.Feed("orders"))

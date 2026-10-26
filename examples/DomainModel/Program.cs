@@ -35,13 +35,13 @@ Console.WriteLine(
     "order-prefix feeds: "
         + string.Join(", ", (await shop.FeedsAsync("order")).Select(f => f.Name)));
 
-var orders = shop.Feed("orders"); // Feed<string, byte[]>, zero I/O
+var orders = shop.Feed("orders", Codecs.Utf8); // Feed<string,string> — codec-bound
 
 var writer = await client
     .CreateWriter(shop, orders)
     .WriterId("orders.ingest")
     .OpenAsync();
-await writer.AppendAsync("order-1", System.Text.Encoding.UTF8.GetBytes("{\"total\":42}"));
+await writer.AppendAsync("order-1", "{\"total\":42}");
 
 await using var reader = await client
     .CreateReader(shop, orders)

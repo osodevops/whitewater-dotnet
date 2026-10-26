@@ -22,13 +22,16 @@ await shop.CreateFeedAsync("orders");
 await shop.CreateFeedAsync("orders.dlq");       // dead-letter feed
 
 // ---- produce (usually a different service) ---------------------------
-var writer = await shop.CreateWriter("orders").WriterId("orders.ingest").OpenAsync();
-await writer.AppendAsync("order-1", Encoding.UTF8.GetBytes("{\"total\":42}"));
+// Bind codecs on the Feed handle — the SDK serializes, never GetBytes.
+var orders = shop.Feed("orders", Codecs.Utf8);        // JSON text payloads
+var writer = await shop.CreateWriter(orders).WriterId("orders.ingest").OpenAsync();
+await writer.AppendAsync("order-1", "{\"total\":42}");
 
 // ---- consume ----------------------------------------------------------
-var deadLetter = await shop.CreateWriter("orders.dlq")
+var dlq = shop.Feed("orders.dlq", Codecs.Utf8);
+var deadLetter = await shop.CreateWriter(dlq)
     .WriterId("fulfillment.dlq").OpenAsync();
-await using var reader = await shop.CreateReader("orders")
+await using var reader = await shop.CreateReader(orders)
     .ReaderId("fulfillment")                            // durable id — survives restarts
     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning) // first-declare only
     .MaxPageSize(250)                                   // max records per fetch page
