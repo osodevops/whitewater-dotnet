@@ -305,15 +305,19 @@ public sealed class Feed<TKey, TValue>
 
     /// <summary>
     /// A session-bound named Reader on this Feed: declares the Reader
-    /// (at BEGINNING) when missing, opens a session with the bounded
-    /// fetch capacity, and returns decoded messages.
+    /// when missing (at <paramref name="start"/>, default BEGINNING —
+    /// an existing declaration keeps its own start and durable
+    /// progress), opens a session with the bounded fetch capacity, and
+    /// returns decoded messages.
     /// </summary>
     public async Task<FeedReader<TKey, TValue>> ReaderAsync(
-        string readerName, int capacity = 64, CancellationToken ct = default)
+        string readerName, int capacity = 64, ReaderStart? start = null,
+        CancellationToken ct = default)
     {
         try
         {
-            await _client.CreateReaderAsync(readerName, Name, ReaderStart.Beginning(), ct)
+            await _client.CreateReaderAsync(
+                    readerName, Name, start ?? ReaderStart.Beginning(), ct)
                 .ConfigureAwait(false);
         }
         catch (WhitewaterException error) when (error.Message.Contains("exists"))

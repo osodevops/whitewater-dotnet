@@ -266,6 +266,76 @@ public sealed class WhitewaterClient
         string name, string feed, ReaderStart? start = null, CancellationToken ct = default)
         => CreateFromAsync("READER", name, feed, start ?? ReaderStart.Beginning(), ct);
 
+    // ---- strongly-typed Domains ---------------------------------------------
+    // A Domain owns every Feed it prefixes (shop owns shop.orders). The
+    // typed entry point:
+    //
+    //   var shop = await client.GetDomainAsync("shop");
+    //   await using var reader = await client.CreateReader(shop, shop.Feed("orders"))
+    //       .ReaderId("fulfillment")
+    //       .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
+    //       .OpenAsync();
+
+    /// <summary>A lazy <see cref="Domain"/> handle — no I/O until a
+    /// catalog accessor runs; <see cref="Domain.Feed(string)"/> name
+    /// composition stays free.</summary>
+    public Domain Domain(string name) => new(this, name);
+
+    /// <summary><see cref="Domain(string)"/> plus an immediate snapshot
+    /// load — verifies the Domain exists now.</summary>
+    public Task<Domain> GetDomainAsync(string name, CancellationToken ct = default)
+        => Domain(name).RefreshAsync(ct);
+
+    /// <summary>
+    /// A fluent <see cref="ReaderBuilder{TKey,TValue}"/> bound to
+    /// <paramref name="domain"/> + <paramref name="feed"/> —
+    /// <c>client.CreateReader(shop, orders).ReaderId("audit")
+    /// .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
+    /// .OpenAsync()</c>. A <see cref="Feed{TKey,TValue}"/> bound to
+    /// another Domain is refused locally.
+    /// </summary>
+    public ReaderBuilder<TKey, TValue> CreateReader<TKey, TValue>(
+        Domain domain, Feed<TKey, TValue> feed)
+    {
+        ArgumentNullException.ThrowIfNull(feed);
+        RequireOwnedFeed(domain, feed.Name);
+        return new ReaderBuilder<TKey, TValue>(this, domain, feed);
+    }
+
+    /// <summary><see cref="CreateReader{TKey,TValue}(Domain, Feed{TKey,TValue})"/>
+    /// by relative Feed name — codecs default to UTF-8 keys/byte payloads.</summary>
+    public ReaderBuilder<string, byte[]> CreateReader(Domain domain, string feed)
+        => CreateReader(domain, domain.Feed(feed));
+
+    /// <summary>
+    /// A fluent <see cref="WriterBuilder{TKey,TValue}"/> bound to
+    /// <paramref name="domain"/> + <paramref name="feed"/> —
+    /// <c>client.CreateWriter(shop, orders).WriterId("ingest").OpenAsync()</c>.
+    /// </summary>
+    public WriterBuilder<TKey, TValue> CreateWriter<TKey, TValue>(
+        Domain domain, Feed<TKey, TValue> feed)
+    {
+        ArgumentNullException.ThrowIfNull(feed);
+        RequireOwnedFeed(domain, feed.Name);
+        return new WriterBuilder<TKey, TValue>(this, domain, feed);
+    }
+
+    /// <summary><see cref="CreateWriter{TKey,TValue}(Domain, Feed{TKey,TValue})"/>
+    /// by relative Feed name — codecs default to UTF-8 keys/byte payloads.</summary>
+    public WriterBuilder<string, byte[]> CreateWriter(Domain domain, string feed)
+        => CreateWriter(domain, domain.Feed(feed));
+
+    private static void RequireOwnedFeed(Domain domain, string? feed)
+    {
+        ArgumentNullException.ThrowIfNull(domain);
+        ArgumentNullException.ThrowIfNull(feed);
+        if (!feed.StartsWith(domain.Name + ".", StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"feed '{feed}' is outside Domain '{domain.Name}'", nameof(feed));
+        }
+    }
+
     /// <summary><c>CREATE SUBSCRIPTION &lt;name&gt; FROM &lt;feed&gt;
     /// [START AT &lt;start&gt;]</c>.</summary>
     public Task<ControlExecution> CreateSubscriptionAsync(

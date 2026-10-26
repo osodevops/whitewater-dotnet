@@ -62,9 +62,9 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
     private readonly Dictionary<string, WriterState> _writers = new();
     private readonly Dictionary<string, ReaderState> _readers = new();
     private readonly Dictionary<string, StoreState> _stores = new();
-    private readonly HashSet<string> _domains = new();
-    private readonly HashSet<string> _roles = new();
-    private readonly HashSet<string> _subscriptions = new();
+    private readonly Dictionary<string, DomainState> _domains = new();
+    private readonly Dictionary<string, Guid> _roles = new();
+    private readonly Dictionary<string, SubscriptionState> _subscriptions = new();
     private readonly Dictionary<string, (int Status, string Body)> _adminDedup = new();
     private readonly Dictionary<string, AppendReceipt> _writerDedup = new();
     private readonly Dictionary<string, AppendReceipt> _feedDedup = new();
@@ -317,6 +317,7 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
     private sealed class FeedState
     {
         public Guid Id = Guid.NewGuid();
+        public long CreatedAtNs;
         public List<StoredRecord> Records = new();
         /// <summary>Opaque cursor -> the index of the record that follows
         /// it (a record cursor maps to its own index + 1; boundary tokens
@@ -326,6 +327,8 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
 
     private sealed class WriterState
     {
+        public Guid Id = Guid.NewGuid();
+        public long CreatedAtNs;
         public FeedState Feed = new();
         public long Epoch;
         public Guid SessionId;
@@ -335,12 +338,28 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
     private sealed class ReaderState
     {
         public Guid Id = Guid.NewGuid();
+        public long CreatedAtNs;
         public FeedState Feed = new();
+        public string StartKind = "beginning";
         public long AckIndex;
         public long DeliverIndex;
         public long Epoch;
         public int Capacity = 64;
         public bool Open;
+    }
+
+    private sealed class DomainState
+    {
+        public Guid Id = Guid.NewGuid();
+        public long CreatedAtNs;
+    }
+
+    private sealed class SubscriptionState
+    {
+        public Guid Id = Guid.NewGuid();
+        public long CreatedAtNs;
+        public string Feed = "";
+        public string StartKind = "beginning";
     }
 
     private sealed class AdhocWriter
@@ -364,6 +383,7 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
     private sealed class StoreState
     {
         public Guid Id = Guid.NewGuid();
+        public long CreatedAtNs;
         public bool Manual = true;
         public Dictionary<string, bool> NamedKeys = new();
         public SortedDictionary<byte[], StoreRowState> Rows =
@@ -399,12 +419,34 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
         }
     }
 
+    private DomainState DomainFor(string name)
+    {
+        if (!_domains.TryGetValue(name, out var domain))
+        {
+            domain = new DomainState { CreatedAtNs = NowNs() };
+            _domains[name] = domain;
+        }
+        return domain;
+    }
+
+    /// <summary>The <c>space_id</c> a resource name falls under — the
+    /// fake scopes by first dotted segment, matching its domain
+    /// derivation.</summary>
+    private string? SpaceIdOf(string resourceName)
+    {
+        var first = resourceName.Split('.')[0];
+        return _domains.TryGetValue(first, out var domain) ? domain.Id.ToString() : null;
+    }
+
     private FeedState FeedFor(string name)
     {
         if (!_feeds.TryGetValue(name, out var feed))
         {
-            feed = new FeedState();
+            feed = new FeedState { CreatedAtNs = NowNs() };
             _feeds[name] = feed;
+            // Declarations materialize their owning Domain on first
+            // reference — the typed facade never declares it itself.
+            DomainFor(name.Split('.')[0]);
         }
         return feed;
     }
@@ -1306,7 +1348,7 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
     private static Refusal Exists(string kind, string name)
         => Refusal.BadRequest($"{kind} '{name}' already exists");
 
-    private JsonObject ExecuteWcl(string statement)
+    private JsonNode ExecuteWcl(string statement)
     {
         var tokens = WclTokens(statement);
         if (tokens.Count == 0)
@@ -1324,10 +1366,21 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
         {
             case "CREATE" when kind is "DOMAIN" or "ROLE":
             {
-                var set = kind == "DOMAIN" ? _domains : _roles;
-                if (!set.Add(tokens[2]))
+                if (kind == "DOMAIN")
                 {
-                    throw Exists(kind, tokens[2]);
+                    if (_domains.ContainsKey(tokens[2]))
+                    {
+                        throw Exists(kind, tokens[2]);
+                    }
+                    DomainFor(tokens[2]);
+                }
+                else
+                {
+                    if (_roles.ContainsKey(tokens[2]))
+                    {
+                        throw Exists(kind, tokens[2]);
+                    }
+                    _roles[tokens[2]] = Guid.NewGuid();
                 }
                 return new JsonObject { ["name"] = tokens[2] };
             }
@@ -1351,7 +1404,11 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                 var feed = tokens.Count > 4 && tokens[3].Equals("TO", StringComparison.OrdinalIgnoreCase)
                     ? tokens[4]
                     : throw Refusal.BadRequest($"unsupported WCL: {statement}");
-                _writers[name] = new WriterState { Feed = FeedFor(feed) };
+                _writers[name] = new WriterState
+                {
+                    Feed = FeedFor(feed),
+                    CreatedAtNs = NowNs(),
+                };
                 return new JsonObject { ["name"] = name };
             }
             case "CREATE" when kind is "READER" or "SUBSCRIPTION":
@@ -1360,7 +1417,7 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                 var name = tokens[2];
                 var taken = kind == "READER"
                     ? _readers.ContainsKey(name)
-                    : _subscriptions.Contains(name);
+                    : _subscriptions.ContainsKey(name);
                 if (taken)
                 {
                     throw Exists(kind, name);
@@ -1384,13 +1441,20 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                     _readers[name] = new ReaderState
                     {
                         Feed = records,
+                        StartKind = StartKind(tokens),
                         AckIndex = index,
                         DeliverIndex = index,
+                        CreatedAtNs = NowNs(),
                     };
                 }
                 else
                 {
-                    _subscriptions.Add(name);
+                    _subscriptions[name] = new SubscriptionState
+                    {
+                        Feed = feed,
+                        StartKind = StartKind(tokens),
+                        CreatedAtNs = NowNs(),
+                    };
                 }
                 return new JsonObject { ["name"] = name };
             }
@@ -1447,12 +1511,12 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                 var renamed = tokens[4];
                 var moved = kind switch
                 {
-                    "DOMAIN" => MoveSet(_domains, current, renamed),
-                    "ROLE" => MoveSet(_roles, current, renamed),
+                    "DOMAIN" => MoveMap(_domains, current, renamed),
+                    "ROLE" => MoveMap(_roles, current, renamed),
                     "FEED" => MoveMap(_feeds, current, renamed),
                     "WRITER" => MoveMap(_writers, current, renamed),
                     "READER" => MoveMap(_readers, current, renamed),
-                    "SUBSCRIPTION" => MoveSet(_subscriptions, current, renamed),
+                    "SUBSCRIPTION" => MoveMap(_subscriptions, current, renamed),
                     _ => throw Refusal.BadRequest($"unsupported WCL: {statement}"),
                 };
                 if (!moved)
@@ -1463,54 +1527,14 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
             }
             case "DESCRIBE" when tokens.Count > 2:
             {
-                var name = tokens[2];
-                var known = kind switch
-                {
-                    "DOMAIN" => _domains.Contains(name),
-                    "ROLE" => _roles.Contains(name),
-                    "FEED" => _feeds.ContainsKey(name),
-                    "WRITER" => _writers.ContainsKey(name),
-                    "READER" => _readers.ContainsKey(name),
-                    "SUBSCRIPTION" => _subscriptions.Contains(name),
-                    _ => true,
-                };
-                if (!known)
-                {
-                    throw Refusal.BadRequest($"{kind} '{name}' not found");
-                }
-                return new JsonObject { ["name"] = name, ["kind"] = kind.ToLowerInvariant() };
+                return Describe(kind, tokens[2]);
             }
             case "SHOW" when tokens.Count > 1:
             {
-                var rows = new JsonArray();
-                IEnumerable<string> names = kind switch
-                {
-                    "DOMAINS" => _domains,
-                    "ROLES" => _roles,
-                    "FEEDS" => _feeds.Keys,
-                    "WRITERS" => _writers.Keys,
-                    "READERS" => _readers.Keys,
-                    "SUBSCRIPTIONS" => _subscriptions,
-                    _ => Array.Empty<string>(),
-                };
-                foreach (var name in names.OrderBy(n => n, StringComparer.Ordinal))
-                {
-                    rows.Add(new JsonObject { ["name"] = name });
-                }
-                return new JsonObject { ["rows"] = rows };
+                return Show(kind);
             }
             default:
                 return new JsonObject();
-        }
-
-        static bool MoveSet<T>(ICollection<T> set, T current, T renamed)
-        {
-            if (!set.Remove(current))
-            {
-                return false;
-            }
-            set.Add(renamed);
-            return true;
         }
 
         static bool MoveMap<TValue>(Dictionary<string, TValue> map, string current, string renamed)
@@ -1524,7 +1548,184 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
         }
     }
 
-    private JsonObject ExecuteCommand(JsonObject command)
+    /// <summary><c>START AT</c> tokens → the declared kind.</summary>
+    private static string StartKind(List<string> tokens)
+    {
+        for (var i = 0; i + 2 < tokens.Count; i++)
+        {
+            if (tokens[i].Equals("START", StringComparison.OrdinalIgnoreCase)
+                && tokens[i + 1].Equals("AT", StringComparison.OrdinalIgnoreCase))
+            {
+                var operand = tokens[i + 2].ToUpperInvariant();
+                if (operand.StartsWith("NOW")) return "now";
+                if (operand.StartsWith("CURSOR")) return "cursor";
+                if (operand.StartsWith("TIMESTAMP")) return "timestamp";
+                return "beginning";
+            }
+        }
+        return "beginning";
+    }
+
+    /// <summary>The catalog row SHOW/DESCRIBE surfaces for one resource —
+    /// field names match the server's <c>space_id</c>/<c>feed_id</c>
+    /// join keys.</summary>
+    private JsonObject ResourceRow(string kind, string name)
+    {
+        switch (kind)
+        {
+            case "DOMAIN":
+            case "DOMAINS":
+            case "SPACE":
+            {
+                var d = _domains[name];
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["space_id"] = d.Id.ToString(),
+                    ["domain_id"] = d.Id.ToString(),
+                    ["status"] = "active",
+                    ["created_at_ns"] = d.CreatedAtNs.ToString(),
+                };
+            }
+            case "FEED":
+            case "FEEDS":
+            {
+                var f = _feeds[name];
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["feed_id"] = f.Id.ToString(),
+                    ["space_id"] = SpaceIdOf(name),
+                    ["status"] = "active",
+                    ["created_at_ns"] = f.CreatedAtNs.ToString(),
+                };
+            }
+            case "WRITER":
+            case "WRITERS":
+            {
+                var w = _writers[name];
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["writer_id"] = w.Id.ToString(),
+                    ["feed"] = _feeds.First(p => p.Value == w.Feed).Key,
+                    ["feed_id"] = w.Feed.Id.ToString(),
+                    ["status"] = "active",
+                    ["created_at_ns"] = w.CreatedAtNs.ToString(),
+                    ["session_epoch"] = w.Epoch,
+                    ["session_active"] = w.Epoch > 0,
+                };
+            }
+            case "READER":
+            case "READERS":
+            {
+                var r = _readers[name];
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["reader_id"] = r.Id.ToString(),
+                    ["feed"] = _feeds.First(p => p.Value == r.Feed).Key,
+                    ["feed_id"] = r.Feed.Id.ToString(),
+                    ["start"] = new JsonObject { ["kind"] = r.StartKind },
+                    ["status"] = "active",
+                    ["created_at_ns"] = r.CreatedAtNs.ToString(),
+                    ["session_epoch"] = r.Epoch,
+                    ["session_active"] = r.Open,
+                    ["session_capacity"] = r.Capacity,
+                };
+            }
+            case "SUBSCRIPTION":
+            case "SUBSCRIPTIONS":
+            {
+                var s = _subscriptions[name];
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["subscription_id"] = s.Id.ToString(),
+                    ["space_id"] = SpaceIdOf(s.Feed),
+                    ["feed"] = s.Feed,
+                    ["start"] = new JsonObject { ["kind"] = s.StartKind },
+                    ["stage"] = "declared",
+                    ["status"] = "active",
+                    ["created_at_ns"] = s.CreatedAtNs.ToString(),
+                };
+            }
+            case "STATESTORE":
+            case "STATE_STORE":
+            case "STATESTORES":
+            case "STATE_STORES":
+            {
+                var s = _stores[name];
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["store_id"] = s.Id.ToString(),
+                    ["space_id"] = SpaceIdOf(name),
+                    ["status"] = "active",
+                    ["created_at_ns"] = s.CreatedAtNs.ToString(),
+                };
+            }
+            case "ROLE":
+            case "ROLES":
+            {
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["role_id"] = _roles[name].ToString(),
+                    ["status"] = "active",
+                };
+            }
+            default:
+                return new JsonObject { ["name"] = name };
+        }
+    }
+
+    /// <summary><c>DESCRIBE &lt;kind&gt; &lt;name&gt;</c> — the row, or a
+    /// refusal when missing.</summary>
+    private JsonObject Describe(string kind, string name)
+    {
+        var known = kind switch
+        {
+            "DOMAIN" or "SPACE" => _domains.ContainsKey(name),
+            "ROLE" => _roles.ContainsKey(name),
+            "FEED" => _feeds.ContainsKey(name),
+            "WRITER" => _writers.ContainsKey(name),
+            "READER" => _readers.ContainsKey(name),
+            "SUBSCRIPTION" => _subscriptions.ContainsKey(name),
+            "STATESTORE" or "STATE_STORE" => _stores.ContainsKey(name),
+            _ => false,
+        };
+        if (!known)
+        {
+            throw Refusal.BadRequest($"resource not found: {name}");
+        }
+        return ResourceRow(kind, name);
+    }
+
+    /// <summary><c>SHOW &lt;kind&gt;</c> — the bare row array, matching
+    /// the server's data shape.</summary>
+    private JsonArray Show(string kind)
+    {
+        IEnumerable<string> names = kind switch
+        {
+            "DOMAINS" or "SPACES" => _domains.Keys,
+            "ROLES" => _roles.Keys,
+            "FEEDS" => _feeds.Keys,
+            "WRITERS" => _writers.Keys,
+            "READERS" => _readers.Keys,
+            "SUBSCRIPTIONS" => _subscriptions.Keys,
+            "STATESTORES" or "STATE_STORES" => _stores.Keys,
+            _ => Array.Empty<string>(),
+        };
+        var rows = new JsonArray();
+        foreach (var name in names.OrderBy(n => n, StringComparer.Ordinal))
+        {
+            rows.Add(ResourceRow(kind, name));
+        }
+        return rows;
+    }
+
+    private JsonNode ExecuteCommand(JsonObject command)
     {
         var name = command["command"]?.GetValue<string>() ?? "";
         switch (name)
@@ -1543,6 +1744,7 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                 var store = new StoreState
                 {
                     Manual = command["source"]?["kind"]?.GetValue<string>() != "feed",
+                    CreatedAtNs = NowNs(),
                 };
                 if (command["named_keys"] is JsonArray keys)
                 {
@@ -1571,20 +1773,25 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
             }
             case "describe" when command["kind"]?.GetValue<string>() == "pipe":
             {
+                var pipeName = command["name"]?.GetValue<string>() ?? "";
                 return new JsonObject
                 {
-                    ["rows"] = new JsonArray(new JsonObject
-                    {
-                        ["name"] = command["name"]?.GetValue<string>() ?? "",
-                        ["stage"] = "declared",
-                        ["subscription_id"] = Guid.NewGuid().ToString(),
-                        ["status"] = "ok",
-                        ["created_at_ns"] = NowNs(),
-                    }),
+                    ["name"] = pipeName,
+                    ["pipe_id"] = Guid.NewGuid().ToString(),
+                    ["stage"] = "declared",
+                    ["subscription_id"] = Guid.NewGuid().ToString(),
+                    ["space_id"] = SpaceIdOf(pipeName),
+                    ["status"] = "ok",
+                    ["created_at_ns"] = NowNs(),
                 };
             }
+            case "describe":
+                return Describe(
+                    (command["kind"]?.GetValue<string>() ?? "").ToUpperInvariant(),
+                    command["name"]?.GetValue<string>() ?? "");
             case "show":
-                return new JsonObject { ["rows"] = new JsonArray() };
+                return Show(
+                    (command["kind"]?.GetValue<string>() ?? "").ToUpperInvariant());
             default:
                 // define_pipe / pause_pipe / resume_pipe / grant / unknown
                 // lifecycle — canned success.

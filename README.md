@@ -80,6 +80,47 @@ Codecs.TextMetadata(m) // text Metadata map -> wire bytes
 `feed.View(kc, vc)` and `store.View(...)` rebind codecs without a wire
 call.
 
+### Typed Domains — navigate, don't concatenate
+
+A Domain owns every Feed it prefixes (`shop` owns `shop.orders`), so
+the friendliest surface navigates domain → feed → reader/writer
+instead of composing dotted names by hand:
+
+```csharp
+var shop = await client.GetDomainAsync("shop");   // verifies + materializes now
+// client.Domain("shop") is the lazy form — zero I/O until needed
+
+await shop.FeedNamesAsync();                       // ['shop.orders', ...]
+(await shop.FeedsAsync("order")).Select(f => f.Name); // prefix-filtered
+await shop.ReadersAsync(); await shop.WritersAsync(); // scoped views
+
+var orders = shop.Feed("orders", Codecs.Json<Order>());
+
+var writer = await client
+    .CreateWriter(shop, orders)
+    .WriterId("orders.ingest")
+    .OpenAsync();
+await writer.AppendAsync("order-1", new Order("order-1", 42));
+
+await using var reader = await client
+    .CreateReader(shop, orders)
+    .ReaderId("fulfillment")                              // durable id — the Kafka groupId analogue
+    .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning) // first-declare only
+    .Capacity(256)
+    .OpenAsync();
+var page = await reader.FetchAsync();
+await reader.AckAsync();
+```
+
+`ReaderId` is durable application state: `ReaderStartPoint` applies
+only when the Reader is first declared — an existing Reader resumes its
+acknowledged frontier (the `auto.offset.reset` mapping). For
+cursor/timestamp positions the `ReaderStartPoint(ReaderStart)` overload
+accepts the full form. A `Feed` bound to another Domain is refused
+locally, before any network call. The first catalog accessor issues ONE
+batched control read (`describe domain` + every `show` listing) and
+caches the snapshot — `RefreshAsync()` re-pulls.
+
 ### Wire-level API
 
 The raw `byte[]` API stays available for full control:
