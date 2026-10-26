@@ -182,8 +182,7 @@ public class TypedStoreTests : IDisposable
         var defaults = _client.Store("accounts.employees");
         var d = await defaults.GetAsync("user-1");
         Assert.Equal("user-1", d!.Key);
-        Assert.Equal("""{"Id":"user-1","Name":"Ada"}""",
-            Encoding.UTF8.GetString(d.Value));
+        Assert.Equal("""{"Id":"user-1","Name":"Ada"}""", d.Value);
     }
 
     [Fact]

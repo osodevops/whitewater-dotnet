@@ -331,7 +331,7 @@ public class FeedTests : IDisposable
         var feed = _client.Feed("orders.events");
         var m = Assert.Single(await feed.RecordsAsync(1));
         Assert.Equal("k1", m.Key);
-        Assert.Equal("raw-payload", Encoding.UTF8.GetString(m.Value));
+        Assert.Equal("raw-payload", m.Value);
     }
 
     [Fact]

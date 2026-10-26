@@ -186,7 +186,7 @@ public class ConsumerTests : IDisposable
         _queuedPages.Enqueue(PageJson("c2", "alpha", "beta"));
         var feed = _client.Feed("users.update.request");
         await using var consumer = feed.Consumer("enricher");
-        var seen = new List<FeedMessage<string, byte[]>>();
+        var seen = new List<FeedMessage<string, string>>();
 
         await foreach (var msg in consumer.Messages())
         {
@@ -200,7 +200,7 @@ public class ConsumerTests : IDisposable
 
         Assert.Equal(
             new[] { "alpha", "beta" },
-            seen.Select(m => Encoding.UTF8.GetString(m.Value!)));
+            seen.Select(m => m.Value!));
         Assert.Equal(1, Calls("/v1/readers/ack"));
         Assert.True(Calls("/v1/readers/close") > 0);
         Assert.Null(consumer.Failure);
@@ -255,7 +255,7 @@ public class ConsumerTests : IDisposable
 
         await consumer.RunAsync(m =>
         {
-            seen.Add(Encoding.UTF8.GetString(m.Value!));
+            seen.Add(m.Value!);
             return consumer.DisposeAsync();
         });
 

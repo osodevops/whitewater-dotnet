@@ -22,13 +22,14 @@ await shop.CreateFeedAsync("orders");
 await shop.CreateFeedAsync("orders.dlq");       // dead-letter feed
 
 // ---- produce (usually a different service) ---------------------------
-// Bind codecs on the Feed handle — the SDK serializes, never GetBytes.
-var orders = shop.Feed("orders", Codecs.Utf8);        // JSON text payloads
+// The default Feed binds UTF-8 strings — the SDK serializes, never
+// GetBytes; plain JSON flows with no codec binding.
+var orders = shop.Feed("orders");
 var writer = await shop.CreateWriter(orders).WriterId("orders.ingest").OpenAsync();
 await writer.AppendAsync("order-1", "{\"total\":42}");
 
 // ---- consume ----------------------------------------------------------
-var dlq = shop.Feed("orders.dlq", Codecs.Utf8);
+var dlq = shop.Feed("orders.dlq");
 var deadLetter = await shop.CreateWriter(dlq)
     .WriterId("fulfillment.dlq").OpenAsync();
 await using var reader = await shop.CreateReader(orders)

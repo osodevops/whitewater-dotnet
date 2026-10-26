@@ -355,7 +355,7 @@ public sealed class WhitewaterClient
 
     /// <summary><see cref="CreateReader{TKey,TValue}(Domain, Feed{TKey,TValue})"/>
     /// by relative Feed name — codecs default to UTF-8 keys/byte payloads.</summary>
-    public ReaderBuilder<string, byte[]> CreateReader(Domain domain, string feed)
+    public ReaderBuilder<string, string> CreateReader(Domain domain, string feed)
         => CreateReader(domain, domain.Feed(feed));
 
     /// <summary>
@@ -373,7 +373,7 @@ public sealed class WhitewaterClient
 
     /// <summary><see cref="CreateWriter{TKey,TValue}(Domain, Feed{TKey,TValue})"/>
     /// by relative Feed name — codecs default to UTF-8 keys/byte payloads.</summary>
-    public WriterBuilder<string, byte[]> CreateWriter(Domain domain, string feed)
+    public WriterBuilder<string, string> CreateWriter(Domain domain, string feed)
         => CreateWriter(domain, domain.Feed(feed));
 
     private static void RequireOwnedFeed(Domain domain, string? feed)
@@ -605,8 +605,8 @@ public sealed class WhitewaterClient
 
     /// <summary>The default binding — UTF-8 string keys and untouched
     /// payload bytes, the escape hatch to the wire.</summary>
-    public Feed<string, byte[]> Feed(string name)
-        => new(this, DottedName(name), Codecs.Utf8, Codecs.Bytes);
+    public Feed<string, string> Feed(string name)
+        => new(this, DottedName(name), Codecs.Utf8, Codecs.Utf8);
 
     /// <summary>
     /// A codec-bound StateStore facade — every `Get`/`Put`/`Iterate`
@@ -626,9 +626,9 @@ public sealed class WhitewaterClient
 
     /// <summary>The default binding — UTF-8 keys and untouched payload
     /// bytes.</summary>
-    public Store<string, byte[]> Store(string name)
-        => Whitewater.Store<string, byte[]>.Bind(
-            Whitewater.StateStore.Bound(_transport, name), Codecs.Utf8, Codecs.Bytes);
+    public Store<string, string> Store(string name)
+        => Whitewater.Store<string, string>.Bind(
+            Whitewater.StateStore.Bound(_transport, name), Codecs.Utf8, Codecs.Utf8);
 
     /// <summary>
     /// A thin facade over the node-side StateStore <paramref name="name"/> —

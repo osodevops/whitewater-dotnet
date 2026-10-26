@@ -89,7 +89,7 @@ public sealed class Domain
     /// <summary>Every Feed in this Domain as typed <see cref="Feed{TKey,TValue}"/>
     /// handles, sorted by name. <paramref name="prefix"/> filters on the
     /// relative name (<c>shop.orders</c> → <c>orders</c>).</summary>
-    public async Task<IReadOnlyList<Feed<string, byte[]>>> FeedsAsync(
+    public async Task<IReadOnlyList<Feed<string, string>>> FeedsAsync(
         string? prefix = null, CancellationToken ct = default)
     {
         var snap = await SnapAsync(ct).ConfigureAwait(false);
@@ -152,8 +152,8 @@ public sealed class Domain
     /// already-qualified name (<c>"shop.orders"</c>) is accepted as-is.
     /// Pure name composition — no I/O.
     /// </summary>
-    public Feed<string, byte[]> Feed(string relative)
-        => new(_client, Resolve(relative), Codecs.Utf8, Codecs.Bytes);
+    public Feed<string, string> Feed(string relative)
+        => new(_client, Resolve(relative), Codecs.Utf8, Codecs.Utf8);
 
     /// <summary><see cref="Feed(string)"/> with UTF-8 keys and payloads
     /// of <typeparamref name="TValue"/>.</summary>
@@ -166,7 +166,7 @@ public sealed class Domain
         => new(_client, Resolve(relative), keyCodec, valueCodec);
 
     /// <summary>Alias of <see cref="Feed(string)"/>.</summary>
-    public Feed<string, byte[]> GetFeed(string relative) => Feed(relative);
+    public Feed<string, string> GetFeed(string relative) => Feed(relative);
 
     /// <summary>
     /// <c>CREATE FEED</c> inside this Domain —
@@ -190,7 +190,7 @@ public sealed class Domain
     ///     .OpenAsync();
     /// </code>
     /// </summary>
-    public ReaderBuilder<string, byte[]> CreateReader(string relative)
+    public ReaderBuilder<string, string> CreateReader(string relative)
         => _client.CreateReader(this, relative);
 
     /// <summary><see cref="CreateReader(string)"/> on an explicit
@@ -204,7 +204,7 @@ public sealed class Domain
     /// this Domain — <c>shop.CreateWriter("orders")</c> binds
     /// <c>shop.orders</c>.
     /// </summary>
-    public WriterBuilder<string, byte[]> CreateWriter(string relative)
+    public WriterBuilder<string, string> CreateWriter(string relative)
         => _client.CreateWriter(this, relative);
 
     /// <summary><see cref="CreateWriter(string)"/> on an explicit

@@ -35,7 +35,7 @@ Console.WriteLine(
     "order-prefix feeds: "
         + string.Join(", ", (await shop.FeedsAsync("order")).Select(f => f.Name)));
 
-var orders = shop.Feed("orders", Codecs.Utf8); // Feed<string,string> — codec-bound
+var orders = shop.Feed("orders"); // Feed<string,string> — UTF-8 by default
 
 var writer = await client
     .CreateWriter(shop, orders)

@@ -35,14 +35,14 @@ public class FakeRiverbedTests
         var feed = client.Feed("orders.events");
 
         var writer = await feed.WriterAsync("ingest");
-        await writer.AppendAsync("order-1", Utf8("alpha"));
-        await writer.AppendAsync("order-2", Utf8("beta"));
+        await writer.AppendAsync("order-1", "alpha");
+        await writer.AppendAsync("order-2", "beta");
 
         var reader = await feed.ReaderAsync("audit");
         var page = await reader.FetchAsync();
         Assert.Equal(
             new[] { "alpha", "beta" },
-            page.Records.Select(m => Encoding.UTF8.GetString(m.Value)));
+            page.Records.Select(m => m.Value));
         Assert.Equal(new[] { "order-1", "order-2" }, page.Records.Select(m => m.Key));
         await reader.AckAsync();
         await reader.CloseAsync();
@@ -55,11 +55,11 @@ public class FakeRiverbedTests
         // Temporary fetches see committed history with a continuation.
         var temporary = await feed.FetchAsync(new TemporaryFetchOptions(Limit: 1));
         var first = Assert.Single(temporary.Records);
-        Assert.Equal("alpha", Encoding.UTF8.GetString(first.Value));
+        Assert.Equal("alpha", first.Value);
         Assert.NotNull(temporary.NextCursor);
         var rest = await feed.FetchAsync(
             new TemporaryFetchOptions(After: temporary.NextCursor));
-        Assert.Equal("beta", Encoding.UTF8.GetString(Assert.Single(rest.Records).Value));
+        Assert.Equal("beta", Assert.Single(rest.Records).Value);
     }
 
     [Fact]
@@ -70,8 +70,8 @@ public class FakeRiverbedTests
         var feed = client.Feed("orders.events");
 
         var writer = await feed.WriterAsync("ingest");
-        await writer.AppendAsync("order-1", Utf8("alpha"));
-        await writer.AppendAsync("order-2", Utf8("beta"));
+        await writer.AppendAsync("order-1", "alpha");
+        await writer.AppendAsync("order-2", "beta");
 
         await using var first = await feed.ReaderAsync("audit");
         var page = await first.FetchAsync();
@@ -83,7 +83,7 @@ public class FakeRiverbedTests
         var replayed = await second.FetchAsync();
         Assert.Equal(
             new[] { "alpha", "beta" },
-            replayed.Records.Select(m => Encoding.UTF8.GetString(m.Value)));
+            replayed.Records.Select(m => m.Value));
         await second.AckAsync();
         await second.CloseAsync();
 
@@ -98,7 +98,7 @@ public class FakeRiverbedTests
         var client = new WhitewaterClient("test-key", riverbed.Endpoints);
         var feed = client.Feed("orders.events");
         var writer = await feed.WriterAsync("ingest");
-        await writer.AppendAsync("order-1", Utf8("alpha"));
+        await writer.AppendAsync("order-1", "alpha");
 
         var seen = new List<string>();
         await using (var consumer = feed.Consumer("enricher")
@@ -106,7 +106,7 @@ public class FakeRiverbedTests
         {
             await foreach (var message in consumer.Messages())
             {
-                seen.Add(Encoding.UTF8.GetString(message.Value!));
+                seen.Add(message.Value!);
                 break;                      // drain this page, then stop
             }
         }
@@ -126,9 +126,9 @@ public class FakeRiverbedTests
 
         var requestId = Guid.NewGuid();
         var first = await writer.AppendEventAsync(
-            new FeedEvent<string, byte[]>(Utf8("alpha"), "order-1", requestId));
+            new FeedEvent<string, string>("alpha", "order-1", requestId));
         var retry = await writer.AppendEventAsync(
-            new FeedEvent<string, byte[]>(Utf8("alpha"), "order-1", requestId));
+            new FeedEvent<string, string>("alpha", "order-1", requestId));
 
         Assert.False(first.Deduplicated);
         Assert.True(retry.Deduplicated);
@@ -148,12 +148,12 @@ public class FakeRiverbedTests
         await client.OpenWriterSessionAsync("ingest");       // epoch 2 supersedes
 
         var stale = await Assert.ThrowsAsync<WhitewaterException.StaleSession>(
-            () => writer.AppendAsync("order-1", Utf8("alpha")));
+            () => writer.AppendAsync("order-1", "alpha"));
         Assert.Equal("stale_epoch", stale.Code);
 
         // A session bound at the current epoch still appends.
         var current = await feed.WriterAsync("ingest");
-        await current.AppendAsync("order-1", Utf8("alpha"));
+        await current.AppendAsync("order-1", "alpha");
         Assert.Single(await feed.RecordsAsync(10));
     }
 

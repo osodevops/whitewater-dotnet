@@ -78,7 +78,7 @@ Codecs.Custom<T>(e,d)  // protobuf, msgpack, application framing
 Codecs.TextMetadata(m) // text Metadata map -> wire bytes
 ```
 
-`client.Feed(name)` binds the default `Feed<string, byte[]>`;
+`client.Feed(name)` binds the default `Feed<string, string>` — UTF-8 both ways, so plain JSON flows with no codec ceremony; `Feed(name, Codecs.Bytes)` opts into raw bytes;
 `feed.View(kc, vc)` and `store.View(...)` rebind codecs without a wire
 call.
 

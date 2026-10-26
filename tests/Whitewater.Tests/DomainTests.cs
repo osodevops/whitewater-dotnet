@@ -64,7 +64,7 @@ public class DomainTests
         var shop = await client.GetDomainAsync("shop");
         await shop.CreateFeedAsync("orders");
 
-        var writer = await shop.CreateWriter(shop.Feed("orders", Codecs.Utf8)).WriterId("ingest").OpenAsync();
+        var writer = await shop.CreateWriter("orders").WriterId("ingest").OpenAsync();
         await writer.AppendAsync("order-1", "1");
 
         await using var reader = await shop.CreateReader("orders")
@@ -83,7 +83,7 @@ public class DomainTests
         await client.CreateFeedAsync("shop.orders");
         var shop = client.Domain("shop");
 
-        var writer = await shop.CreateWriter(shop.Feed("orders", Codecs.Utf8)).WriterId("w").OpenAsync();
+        var writer = await shop.CreateWriter("orders").WriterId("w").OpenAsync();
         await writer.AppendAsync("a", "1");
         await writer.AppendAsync("b", "2");
 
@@ -116,7 +116,7 @@ public class DomainTests
         await client.CreateFeedAsync("shop.orders");
         var shop = client.Domain("shop");
 
-        var writer = await shop.CreateWriter(shop.Feed("orders", Codecs.Utf8)).WriterId("w").OpenAsync();
+        var writer = await shop.CreateWriter("orders").WriterId("w").OpenAsync();
         await writer.AppendAsync("a", "1");
 
         await using var reader = await shop.CreateReader("orders")
@@ -221,7 +221,7 @@ public class DomainTests
 
         var shop = client.Domain("shop");
         var writer = await client
-            .CreateWriter(shop, shop.Feed("orders", Codecs.Utf8))
+            .CreateWriter(shop, "orders")
             .WriterId("orders.ingest")
             .OpenAsync();
         await writer.AppendAsync("order-1", "{\"total\":9}");
