@@ -4,8 +4,9 @@ namespace Whitewater;
 
 /// <summary>
 /// One side of a Feed's schema metadata — format plus optional
-/// subject/definition text. Formats: <c>text</c>, <c>json</c>,
-/// <c>protobuf</c>, <c>avro</c>, <c>custom.&lt;name&gt;</c>. Records
+/// subject/definition text. Formats: <c>json</c>, <c>jsonschema</c>,
+/// <c>avro</c>, <c>protobuf</c>, <c>text</c>, <c>bytes</c>, or
+/// <c>custom.&lt;name&gt;</c>. Records
 /// stay schema-neutral bytes on the wire; declarations are catalog
 /// metadata for tooling and compatibility — not yet an enforced
 /// registry.

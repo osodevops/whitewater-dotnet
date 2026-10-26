@@ -143,8 +143,8 @@ await client.ClearFeedSchemaAsync("shop.orders");  // reverts to inheritance
 
 `SET SCHEMA ON DOMAIN|FEED <name> (KEY|VALUE <format> [SUBJECT 'x']
 [DEFINITION 'y'])+` in WCL does the same; `SHOW SCHEMAS` lists declared
-assignments. Formats today: `text`, `json`, `protobuf`, `avro`,
-`custom.<name>` — compatibility enforcement is still a no-op.
+assignments. Formats today: `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`,
+or `custom.<name>` — compatibility enforcement is still a no-op.
 
 ### Wire-level API
 
