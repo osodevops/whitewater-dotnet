@@ -326,6 +326,33 @@ variants evolve without an SDK bump. `QueryIndexAsync` values accept the
 same typed scalars as StateStore named values — floats are refused
 because the wire carries exact `i64`/`text`/`bytes`.
 
+## API surface
+
+Everything the SDK exposes, grouped by capability. The typed surface
+(`Domain` → `Feed` → writer/reader/consumer) covers the daily path;
+`CommandsAsync`, `WclAsync`, and the `*SessionClient` classes are the
+explicit escape hatches for the same wire contract.
+
+| Area | API |
+|---|---|
+| Client & transport | `new WhitewaterClient(apiKey, endpoints, timeout?)` · `HealthyAsync` · `UseCompression` on feeds/writers |
+| Typed Domains | `Domain(name)` lazy / `GetDomainAsync(name)` eager · `DomainIdAsync` `RevisionAsync` `DescribeAsync` `HistoryPolicyAsync` `RefreshAsync` · `FeedsAsync(prefix)` `FeedNamesAsync` `ReadersAsync` `WritersAsync` `SubscriptionsAsync` `PipeNamesAsync` `IndexesAsync` `StateStoresAsync` · `Feed(relative[, codec])` `GetFeed` |
+| Schemas | `SetDomainSchemaAsync` `SetFeedSchemaAsync` `ClearDomainSchemaAsync` `ClearFeedSchemaAsync` · `Domain.SchemaAsync` `FeedSchemaAsync` `DeclaredFeedSchemaAsync` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
+| Feeds | `Feed(name)` / `Feed<TKey,TValue>` · `UseCompression` · `RecordsAsync` `FetchAsync` `LoadAsync` · `WriterAsync` `AppendAsync` `ReaderAsync` `Subscribe` `Consumer` `View<TK2,TV2>` |
+| Writing | `FeedWriter.AppendAsync(k, v)` `AppendEventAsync` `AppendAllAsync` · `UseCompression` `SessionEpoch` · idempotent `request_id` · `FeedEvent` carries event time + Metadata |
+| Reading | `FeedReader.FetchAsync(limit)` `AckAsync([cursor])` `CloseAsync`/`DisposeAsync` · `SessionEpoch` · durable `readerId` · `ReaderStart` / `FirstTimeReaderStartPosition` (`Beginning`, `End`, `Now`, cursor, timestamp) |
+| Temporary fetches | `Feed.FetchAsync` / `Feeds.TemporaryFetchAsync` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `LoadAsync` |
+| Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `WithCapacity` `OnRecord` `OnError` `WithBackoff` `LastError` `Failure` `IsRunning` · `Messages` (IAsyncEnumerable) / `RunAsync` / `DisposeAsync` |
+| Subscription members | `SubscriptionMember(name)` → `JoinAsync` `ClaimAsync` `RenewAsync` `ReleaseAsync` `FetchAsync` `AckAsync` — shared progress + RF3 work leases · `Feed.Subscribe` managed loop (`Subscription.Failure`) |
+| StateStores | `StateStore(name)` / typed `Store<TKey,TValue>`: `PutAsync` `GetAsync` `GetByAsync` `FindAsync` `FindByAsync` `GetOrDefaultAsync` `DeleteAsync` `PageAsync` `IterateAsync` (IAsyncEnumerable) `ClearAsync` `DropAsync` `Raw` `View` · `StateStores.DefineAsync` `DropAsync` |
+| Indexes | `QueryIndexAsync(name, IndexPredicate)` → `IndexPage` · `IndexPredicate.Exact/Prefix/Range` + `IndexBound.InclusiveBound/ExclusiveBound` |
+| Pipes | `DefineForwardPipeAsync` `DefineEnrichPipeAsync` `DefineWindowPipeAsync` · `Pipe(name)` → `DescribeAsync` `PauseAsync` `ResumeAsync` `DropAsync` · `PipesAsync` · `PipeOperation` `WindowAggregation` `WindowTime` · durations are `TimeSpan` |
+| Catalog lifecycle | `Create*Async` `Describe*Async` `Rename*Async` `Drop*Async` `List*Async` for Domain, Feed, Writer, Reader, Subscription, Role · `ListGrantsAsync` · `OpenWriterSessionAsync` `SeekReaderAsync` |
+| Observability | `DemandFeedsAsync` `DemandReadersAsync` `DemandSubscriptionsAsync` `DemandIndexesAsync` `DemandPipesAsync` → `DemandReport`/`DemandRow` · `HotKeysAsync` → `HotKey` |
+| Escape hatches | `WclAsync(script)` · `CommandsAsync([...])` raw command batch · `WriterSessionClient` `ReaderSessionClient` `SubscriptionMemberClient` byte-level sessions · `Feeds` raw `FeedClient` |
+| Errors | `WhitewaterException` — `.Refused` `.StaleSession` `.AmbiguousResult` `.Conflict` `.Unavailable` `.LeaseConflict` · `Code` carries the wire `code` |
+| Testing | `FakeRiverbed` — in-process Riverbed implementing the wire contract (dedup, epochs, at-least-once reads, stores, WCL/commands, schemas) |
+
 ## Contract parity
 
 This SDK implements the versioned wire contract in
