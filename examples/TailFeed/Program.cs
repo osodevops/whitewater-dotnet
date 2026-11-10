@@ -1,4 +1,3 @@
-using System.Text;
 using Whitewater;
 
 // Ephemeral consumption: an anonymous temporary Reader with server-side
@@ -7,7 +6,7 @@ using Whitewater;
 //
 // The loop:
 //
-//   TemporaryFetchAsync(Tail, WaitMs) -> records -> NextCursor -> repeat
+//   FetchAsync(Tail, WaitMs) -> records -> NextCursor -> repeat
 //
 // WaitMs makes each call a long-poll: the Node holds the request until
 // records commit or the wait expires, then answers — so the loop does
@@ -22,20 +21,21 @@ var client = new WhitewaterClient(
         new Uri("http://localhost:7373"),
     });
 
-await client.CreateDomainAsync("demo");
-await client.CreateFeedAsync("demo.tail");
+var demo = await client.CreateDomainAsync("demo");
+await demo.CreateFeedAsync("tail");
+var tail = demo.Feed("tail"); // resolves demo.tail — zero I/O
 
 Cursor? after = null; // null -> feed tail position
 
 while (true)
 {
     // Blocks up to WaitMs server-side; returns early when records land.
-    var page = await client.Feeds.TemporaryFetchAsync("demo.tail",
+    var page = await tail.FetchAsync(
         TemporaryFetchOptions.Tailed(after, 50, 2500));
 
     foreach (var record in page.Records)
     {
-        Console.WriteLine($"{Encoding.UTF8.GetString(record.Payload)} @ {record.IngestTimeNs}");
+        Console.WriteLine($"{record.Value} @ {record.IngestTimeNs}");
     }
 
     // Continue from the PAGE frontier, not the last record's cursor —

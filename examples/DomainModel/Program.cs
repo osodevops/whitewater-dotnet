@@ -1,14 +1,19 @@
 using Whitewater;
 
-// The strongly-typed Domain facade — navigate the namespace instead of
-// composing dotted names by hand.
+// The strongly-typed Domain facade — the only front door. A Domain owns
+// every Feed it prefixes (shop owns shop.orders), so names compose
+// inside it instead of being scattered dotted strings:
 //
-//   var shop = await client.GetDomainAsync("shop");  // materialized view
-//   var orders = shop.Feed("orders");                // typed Feed, zero I/O
-//   var reader = await client.CreateReader(shop, orders)
-//       .ReaderId("fulfillment")
+//   var shop = await client.CreateDomainAsync("shop");  // declares + returns the handle
+//   var orders = shop.Feed("orders");                   // typed Feed, zero I/O
+//   var reader = await shop.CreateReader("orders")
+//       .ReaderId("fulfillment")                       // resolves shop.fulfillment
 //       .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
 //       .OpenAsync();
+//
+// client.GetDomainAsync("shop") verifies + materializes an existing
+// Domain's catalog view; client.Domain("shop") is the lazy handle —
+// no I/O until a catalog accessor runs.
 //
 // Run a Riverbed (scripts/test-*.py bring one up on 7371–7373), then:
 //
@@ -23,12 +28,13 @@ var client = new WhitewaterClient(
         new Uri("http://localhost:7373"),
     });
 
-await client.CreateDomainAsync("shop");
-await client.CreateFeedAsync("shop.orders");
-await client.CreateFeedAsync("shop.returns");
+var shop = await client.CreateDomainAsync("shop");
+await shop.CreateFeedAsync("orders");
+await shop.CreateFeedAsync("returns");
 
-// GetDomainAsync() verifies + materializes now; Domain() is the lazy handle.
-var shop = await client.GetDomainAsync("shop");
+// GetDomainAsync() verifies + materializes now; the lazy handle would
+// pull the same view on first catalog access.
+await shop.RefreshAsync();
 
 Console.WriteLine("feeds: " + string.Join(", ", await shop.FeedNamesAsync()));
 Console.WriteLine(
@@ -37,25 +43,22 @@ Console.WriteLine(
 
 var orders = shop.Feed("orders"); // Feed<string,string> — UTF-8 by default
 
-var writer = await client
-    .CreateWriter(shop, orders)
-    .WriterId("orders.ingest")
+var writer = await shop
+    .CreateWriter("orders")
+    .WriterId("orders.ingest")   // deeper relative names compose too
     .OpenAsync();
 await writer.AppendAsync("order-1", "{\"total\":42}");
 
-await using var reader = await client
-    .CreateReader(shop, orders)
+await using var reader = await shop
+    .CreateReader("orders")
     .ReaderId("fulfillment") // durable id — the Kafka groupId analogue
     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning) // first-declare only
     .MaxPageSize(256)
     .OpenAsync();
-var page = await reader.FetchAsync();
-foreach (var record in page.Records)
-{
-    Console.WriteLine($"read {record.Key} {System.Text.Encoding.UTF8.GetString(record.Value)}");
-}
-await reader.AckAsync(); // durable progress
 
-await shop.RefreshAsync(); // re-pull the catalog snapshot
-Console.WriteLine("readers: " + string.Join(", ", await shop.ReadersAsync()));
-Console.WriteLine("writers: " + string.Join(", ", await shop.WritersAsync()));
+var page = await reader.FetchAsync();
+foreach (var message in page.Records)
+{
+    Console.WriteLine($"{message.Key} -> {message.Value}");
+}
+await reader.AckAsync();

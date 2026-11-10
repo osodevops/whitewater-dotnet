@@ -38,9 +38,14 @@ var client = new WhitewaterClient(
     apiKey: "...",
     endpoints: new[] { new Uri("https://node1:7070"), new Uri("https://node2:7070") });
 
+// Every business resource lives inside a Domain — the Domain is the
+// only way to reach feeds, stores, readers, and writers.
+var shop = await client.GetDomainAsync("shop");
+var accounts = await client.GetDomainAsync("accounts");
+
 // UTF-8 keys + JSON payloads (one codec types the payload; two bind
 // key and payload explicitly).
-var orders = client.Feed("shop.orders", Codecs.Json<Order>());
+var orders = shop.Feed("orders", Codecs.Json<Order>());
 
 var writer = await orders.WriterAsync("ingest");   // declares + opens session
 await writer.AppendAsync("order-42", new Order("order-42", 99));
@@ -53,7 +58,7 @@ var page = await reader.FetchAsync();
 foreach (var m in page.Records) Console.WriteLine($"{m.Key} {m.Value.Total}");
 await reader.AckAsync();
 
-var profiles = client.Store("accounts.employees", Codecs.Json<Profile>());
+var profiles = accounts.Store("employees", Codecs.Json<Profile>());
 await profiles.PutAsync("user-1", profile,
     new Dictionary<string, object?> { ["passport"] = "P111" });
 var row = await profiles.GetAsync("user-1");        // row.Value is Profile
@@ -78,7 +83,7 @@ Codecs.Custom<T>(e,d)  // protobuf, msgpack, application framing
 Codecs.TextMetadata(m) // text Metadata map -> wire bytes
 ```
 
-`client.Feed(name)` binds the default `Feed<string, string>` — UTF-8 both ways, so plain JSON flows with no codec ceremony; `Feed(name, Codecs.Bytes)` opts into raw bytes;
+`domain.Feed(name)` binds the default `Feed<string, string>` — UTF-8 both ways, so plain JSON flows with no codec ceremony; `Feed(name, Codecs.Bytes)` opts into raw bytes;
 `feed.View(kc, vc)` and `store.View(...)` rebind codecs without a wire
 call.
 
@@ -103,7 +108,7 @@ var orders = shop.Feed("orders", Codecs.Json<Order>());
 // resolve inside it:
 var writer = await shop
     .CreateWriter("orders")
-    .WriterId("orders.ingest")
+    .WriterId("ingest")              // resolves to shop.ingest
     .OpenAsync();
 await writer.AppendAsync("order-1", new Order("order-1", 42));
 
@@ -137,16 +142,16 @@ compatibility. The Domain's schema is the default every Feed inherits;
 a Feed's own declaration overrides the named sides:
 
 ```csharp
-await client.SetDomainSchemaAsync("shop",
+await shop.SetSchemaAsync(
     new FeedSchema(Value: new SchemaDecl("json", Subject: "order-v1")));
-await client.SetFeedSchemaAsync("shop.orders",
+await shop.SetFeedSchemaAsync("orders",
     new FeedSchema(Key: new SchemaDecl("text")));
 await shop.RefreshAsync();
 
-await shop.SchemaAsync();                      // the Domain default
-await shop.FeedSchemaAsync("shop.orders");     // effective: key=text, value=json/order-v1
-await shop.DeclaredFeedSchemaAsync("shop.orders");
-await client.ClearFeedSchemaAsync("shop.orders");  // reverts to inheritance
+await shop.SchemaAsync();                 // the Domain default
+await shop.FeedSchemaAsync("orders");     // effective: key=text, value=json/order-v1
+await shop.DeclaredFeedSchemaAsync("orders");
+await shop.ClearFeedSchemaAsync("orders");   // reverts to inheritance
 ```
 
 `SET SCHEMA ON DOMAIN|FEED <name> (KEY|VALUE <format> [SUBJECT 'x']
@@ -160,19 +165,19 @@ The raw `byte[]` API stays available for full control:
 
 ```csharp
 // Provision a Domain, Feed, Writer, and session — either typed
-// (each method builds its WCL statement for you):
-await client.CreateDomainAsync("shop");
-var shopDomain = await client.GetDomainAsync("shop");
-await shopDomain.CreateFeedAsync("orders");   // = CreateFeedAsync("shop.orders")
-await client.CreateWriterAsync("orders-writer", "shop.orders");
-var setup = await client.OpenWriterSessionAsync("orders-writer");
+// (each method builds its WCL statement for you). CreateDomainAsync
+// returns the Domain handle — every resource lives under it:
+var shop = await client.CreateDomainAsync("shop");
+await shop.CreateFeedAsync("orders");            // CREATE FEED shop.orders
+await shop.CreateWriterAsync("orders.writer", "orders");
+var setup = await shop.OpenWriterSessionAsync("orders.writer");
 var sessionEpoch = setup.Results[0].Data["session_epoch"]!.GetValue<long>();
 //
 // …or raw WCL when a script is clearer:
 //   await client.WclAsync("CREATE DOMAIN shop; CREATE FEED shop.orders; ...");
 
 // Idempotent append — retrying with the same request id is safe.
-var writer = client.Writer("orders-writer", sessionEpoch);
+var writer = shop.Writer("orders.writer", sessionEpoch);
 var appended = await writer.AppendAsync(
     key: "order-42"u8.ToArray(),
     payload: "created"u8.ToArray(),
@@ -180,9 +185,9 @@ var appended = await writer.AppendAsync(
     eventTimeNs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L,
     metadata: new Dictionary<string, byte[]> { ["source"] = "api"u8.ToArray() });
 
-// Independent durable reader.
-var reader = client.Reader("orders-reader");
-var session = await reader.OpenAsync(maxPageSize: 64);
+// Independent durable reader — the name resolves inside the Domain.
+var reader = shop.Reader("orders.reader");
+var session = await reader.OpenAsync(capacity: 64);
 var page = await reader.FetchAsync(session);
 foreach (var record in page.Records)
 {
@@ -198,13 +203,14 @@ if (page.DeliveredCursor is { } frontier)
 
 ```csharp
 // One-shot bulk read of committed history, delivered per page.
-var loaded = await client.Feeds.LoadAsync("hr.employees",
+var hr = await client.GetDomainAsync("hr");
+var loaded = await hr.Feed("employees").LoadAsync(
     ReaderStart.Beginning(),
     batch => { Export(batch); return Task.CompletedTask; });
 
 // ...or keep receiving: provisions the Reader, runs
 // Open -> [Fetch -> onRecords -> Ack] -> Close on a background task.
-await using var sub = client.Subscribe("hr-view", "hr.employees",
+await using var sub = hr.Subscribe("hr-view", "employees",
     ReaderStart.Now(),
     batch => { Export(batch); return Task.CompletedTask; },
     error => Console.Error.WriteLine($"subscription ended: {error}"));
@@ -218,7 +224,8 @@ re-open on fencing, and graceful drain are all internal. Application
 code only sees decoded records, one at a time:
 
 ```csharp
-var feed = client.Feed("users.update.request", Codecs.Json<UpdateRequest>());
+var users = await client.GetDomainAsync("users");
+var feed = users.Feed("update.request", Codecs.Json<UpdateRequest>());
 
 await foreach (var msg in feed.ConsumeAsync("enricher", stoppingToken))
 {
@@ -253,9 +260,10 @@ enrichment service — primary/named-key store lookups, DLQ, counters.
 ### Server-side StateStores
 
 ```csharp
-var spec = StateStore.Named("accounts.employees")
+var accounts = await client.GetDomainAsync("accounts");
+var spec = StateStore.Named("employees")
     .AddKey("passport", unique: true).AddKey("department");   // up to 10 named keys
-var store = await client.StateStores.DefineAsync(spec);       // durable store on the Nodes
+var store = await accounts.DefineStateStoreAsync(spec);       // declares accounts.employees on the Nodes
 
 await store.PutAsync("emp-1"u8.ToArray(), payload,
     new Dictionary<string, object?> { ["passport"] = "P123", ["department"] = "eng" });
@@ -286,35 +294,40 @@ Managed Pipes and replicated Indexes share the same topology-free model
 — names, never partitions or Nodes:
 
 ```csharp
-// Pipe declaration: the client names the business key, source and
-// outputs — the server owns panes, leases and the effect journal.
-await client.DefineForwardPipeAsync("orders.relay", "orders-sub",
-    "orders.relayed");
-await client.DefineEnrichPipeAsync("orders.enrich", "orders-sub",
-    "orders.enriched", "crm.customers",
+// Pipe declaration: the Domain owns the Pipe; every name resolves
+// inside it — the server owns panes, leases and the effect journal.
+// A SubscriptionRef/Feed/Store/StateStore handle (or Scoped.Absolute)
+// from another Domain is the explicit cross-Domain endpoint.
+var orders = await client.GetDomainAsync("orders");
+var crm = await client.GetDomainAsync("crm");
+var stats = await client.GetDomainAsync("stats");
+await orders.DefineForwardPipeAsync("relay", "sub",      // orders.sub → orders.relayed
+    "relayed");
+await orders.DefineEnrichPipeAsync("enrich", "sub",
+    "enriched", crm.StateStore("customers"),   // store: crm.customers
     PipeOperation.Enrich(Extractor.RecordKey(),
         freshness: EnrichFreshness.Latest,
         onMiss: EnrichMiss.Quarantine),
-    quarantineFeed: "orders.enrich-dlq");
-await client.DefineWindowPipeAsync("orders.hourly", "orders-sub",
-    "stats.orders-hourly",
+    quarantineFeed: "enrich.dlq");
+await orders.DefineWindowPipeAsync("hourly", "sub",
+    stats.Scoped("orders.hourly"),            // output store lives in stats
     PipeOperation.Window(TimeSpan.FromHours(1),  // 1h panes
         Extractor.RecordKey(), WindowAggregation.Count(),
         time: WindowTime.Event,
         watermark: TimeSpan.FromMinutes(5),  // 5m horizon
         grace: TimeSpan.FromSeconds(30),     // 30s late revisions
         expire: TimeSpan.FromHours(2)),
-    emitFeed: "orders.hourly-emitted");
+    emitFeed: "hourly.emitted");
 
 // Pipe lifecycle: describe, pause, resume, drop.
-var pipe = client.Pipe("orders.relay");
+var pipe = orders.Pipe("relay");
 var info = await pipe.DescribeAsync();   // stage, operation, outputs, status
 await pipe.PauseAsync(); await pipe.ResumeAsync(); await pipe.DropAsync();
-var pipes = await client.PipesAsync();   // the declared catalog
+var pipes = await orders.PipesAsync();   // the domain's declared catalog
 
 // Index queries: exact, prefix, or range predicates over typed values.
-var page = await client.QueryIndexAsync(
-    "crm.byregion",
+var page = await crm.QueryIndexAsync(
+    "byregion",
     IndexPredicate.Range(
         new object?[] { "emea" },
         IndexBound.InclusiveBound(0L), IndexBound.ExclusiveBound(99L)),
@@ -344,21 +357,21 @@ explicit escape hatches for the same wire contract.
 
 | Area | API |
 |---|---|
-| Client & transport | `new WhitewaterClient(apiKey, endpoints, timeout?)` · `HealthyAsync` · `UseCompression` on feeds/writers |
-| Typed Domains | `Domain(name)` lazy / `GetDomainAsync(name)` eager · `DomainIdAsync` `RevisionAsync` `DescribeAsync` `HistoryPolicyAsync` `RefreshAsync` · `FeedsAsync(prefix)` `FeedNamesAsync` `ReadersAsync` `WritersAsync` `SubscriptionsAsync` `PipeNamesAsync` `IndexesAsync` `StateStoresAsync` · `Feed(relative[, codec])` `GetFeed` · `CreateFeedAsync` `CreateReader` `CreateWriter` (relative/Feed) |
-| Schemas | `SetDomainSchemaAsync` `SetFeedSchemaAsync` `ClearDomainSchemaAsync` `ClearFeedSchemaAsync` · `Domain.SchemaAsync` `FeedSchemaAsync` `DeclaredFeedSchemaAsync` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
-| Feeds | `Feed(name)` / `Feed<TKey,TValue>` · `UseCompression` · `RecordsAsync` `FetchAsync` `LoadAsync` · `WriterAsync` `AppendAsync` `ReaderAsync` `Subscribe` `Consumer` `View<TK2,TV2>` |
+| Client & transport | `new WhitewaterClient(apiKey, endpoints, timeout?)` · `HealthyAsync` · `UseCompression` on feeds/writers · riverbed-wide `Demand*`/`HotKeysAsync` |
+| Domains — the only front door | `CreateDomainAsync` `Domain(name)` lazy / `GetDomainAsync(name)` eager → **every** domain-scoped resource hangs here: `Feed` `CreateFeedAsync` `Store` `StateStore` `Reader` `Writer` `Member` `Subscription` `Pipe` · `DomainIdAsync` `RevisionAsync` `DescribeAsync` `HistoryPolicyAsync` `RefreshAsync` · catalog: `FeedsAsync` `FeedNamesAsync` `ReadersAsync` `WritersAsync` `SubscriptionsAsync` `PipeNamesAsync` `IndexesAsync` `StateStoresAsync` |
+| Schemas | `Domain.SetSchemaAsync` `ClearSchemaAsync` `SetFeedSchemaAsync` `ClearFeedSchemaAsync` · `Domain.SchemaAsync` `FeedSchemaAsync` `DeclaredFeedSchemaAsync` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
+| Feeds | `domain.Feed(name)` / `Feed<TKey,TValue>` · `UseCompression` · `RecordsAsync` `FetchAsync` `LoadAsync` · `WriterAsync` `AppendAsync` `ReaderAsync` `Subscribe` `Consumer` `View<TK2,TV2>` |
 | Writing | `FeedWriter.AppendAsync(k, v)` `AppendEventAsync` `AppendAllAsync` · `UseCompression` `SessionEpoch` · idempotent `request_id` · `FeedEvent` carries event time + Metadata |
-| Reading | `FeedReader.ForEachAsync`/`MessagesAsync(ct)` pump · `FetchAsync(limit)` `AckAsync([cursor])` `CloseAsync`/`DisposeAsync` · `SessionEpoch` · durable `readerId` · `ReaderStart` / `FirstTimeReaderStartPosition` (`Beginning`, `End`, `Now`, cursor, timestamp) |
-| Temporary fetches | `Feed.FetchAsync` / `Feeds.TemporaryFetchAsync` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `LoadAsync` |
+| Reading | `FeedReader.ForEachAsync`/`MessagesAsync(ct)` pump · `FetchAsync(limit)` `AckAsync([cursor])` `CloseAsync`/`DisposeAsync` · `SessionEpoch` · durable `readerId` (resolves in-domain) · `ReaderStart` / `FirstTimeReaderStartPosition` (`Beginning`, `End`, `Now`, cursor, timestamp) |
+| Temporary fetches | `Feed.FetchAsync` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `LoadAsync` |
 | Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `WithMaxPageSize` `OnRecord` `OnError` `WithBackoff` `LastError` `Failure` `IsRunning` · `Messages` (IAsyncEnumerable) / `RunAsync` / `DisposeAsync` |
-| Subscription members | `SubscriptionMember(name)` → `JoinAsync` `ClaimAsync` `RenewAsync` `ReleaseAsync` `FetchAsync` `AckAsync` — shared progress + RF3 work leases · `Feed.Subscribe` managed loop (`Subscription.Failure`) |
-| StateStores | `StateStore(name)` / typed `Store<TKey,TValue>`: `PutAsync` `GetAsync` `GetByAsync` `FindAsync` `FindByAsync` `GetOrDefaultAsync` `DeleteAsync` `PageAsync` `IterateAsync` (IAsyncEnumerable) `ClearAsync` `DropAsync` `Raw` `View` · `StateStores.DefineAsync` `DropAsync` |
-| Indexes | `QueryIndexAsync(name, IndexPredicate)` → `IndexPage` · `IndexPredicate.Exact/Prefix/Range` + `IndexBound.InclusiveBound/ExclusiveBound` |
-| Pipes | `DefineForwardPipeAsync` `DefineEnrichPipeAsync` `DefineWindowPipeAsync` · `Pipe(name)` → `DescribeAsync` `PauseAsync` `ResumeAsync` `DropAsync` · `PipesAsync` · `PipeOperation` `WindowAggregation` `WindowTime` · durations are `TimeSpan` |
-| Catalog lifecycle | `Create*Async` `Describe*Async` `Rename*Async` `Drop*Async` `List*Async` for Domain, Feed, Writer, Reader, Subscription, Role · `ListGrantsAsync` · `OpenWriterSessionAsync` `SeekReaderAsync` |
+| Subscription members | `domain.Member(name)` / `domain.Subscription(name)` → `JoinAsync` `ClaimAsync` `RenewAsync` `ReleaseAsync` `FetchAsync` `AckAsync` — shared progress + RF3 work leases · `Feed.Subscribe`/`Domain.Subscribe` managed loop (`Subscription.Failure`) |
+| StateStores | `domain.StateStore(name)` / typed `domain.Store<TKey,TValue>`: `PutAsync` `GetAsync` `GetByAsync` `FindAsync` `FindByAsync` `GetOrDefaultAsync` `DeleteAsync` `PageAsync` `IterateAsync` (IAsyncEnumerable) `ClearAsync` `DropAsync` `Raw` `View` · `Domain.DefineStateStoreAsync` `DropStateStoreAsync` |
+| Indexes | `Domain.QueryIndexAsync(name, IndexPredicate)` → `IndexPage` · `IndexPredicate.Exact/Prefix/Range` + `IndexBound.InclusiveBound/ExclusiveBound` |
+| Pipes | `Domain.DefineForwardPipeAsync` `DefineEnrichPipeAsync` `DefineWindowPipeAsync` · `Domain.Pipe(name)` → `DescribeAsync` `PauseAsync` `ResumeAsync` `DropAsync` · `Domain.PipesAsync` · `PipeOperation` `WindowAggregation` `WindowTime` · durations are `TimeSpan` · endpoints take `Scoped` — strings resolve in-domain, handles/`Scoped.Absolute` cross Domains |
+| Catalog lifecycle | `Domain.Create*Async` `Describe*Async` `Rename*Async` `Drop*Async` for Feed, Writer, Reader, Subscription, Pipe, StateStore · `OpenWriterSessionAsync` `SeekReaderAsync` · client-level Domain/Role/Grant catalog |
 | Observability | `DemandFeedsAsync` `DemandReadersAsync` `DemandSubscriptionsAsync` `DemandIndexesAsync` `DemandPipesAsync` → `DemandReport`/`DemandRow` · `HotKeysAsync` → `HotKey` |
-| Escape hatches | `WclAsync(script)` · `CommandsAsync([...])` raw command batch · `WriterSessionClient` `ReaderSessionClient` `SubscriptionMemberClient` byte-level sessions · `Feeds` raw `FeedClient` |
+| Escape hatches | `WclAsync(script)` · `CommandsAsync([...])` raw command batch · `WriterSessionClient` `ReaderSessionClient` `SubscriptionMemberClient` byte-level sessions via `domain.Writer`/`domain.Reader`/`domain.Member` · `Store.Raw` |
 | Errors | `WhitewaterException` — `.Refused` `.StaleSession` `.AmbiguousResult` `.Conflict` `.Unavailable` `.LeaseConflict` · `Code` carries the wire `code` |
 | Testing | `FakeRiverbed` — in-process Riverbed implementing the wire contract (dedup, epochs, at-least-once reads, stores, WCL/commands, schemas) |
 

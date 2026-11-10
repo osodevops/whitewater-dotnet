@@ -6,13 +6,15 @@ RF3-replicated, Fjall-backed, and queryable from any Node. The SDK's
 projection, and every operation is an HTTP call with freshness evidence.
 
 ```csharp
-var spec = StateStore.Named("accounts.employees")
+var accounts = await client.GetDomainAsync("accounts");
+
+var spec = StateStore.Named("employees")
     .AddKey("passport", unique: true)        // unique: one row per value
     .AddKey("department");                   // non-unique: value -> many rows
 
-var store = await client.StateStores.DefineAsync(spec);   // manual store
+var store = await accounts.DefineStateStoreAsync(spec);   // manual store: accounts.employees
 // or a bound facade for an already-declared store:
-var same = client.StateStore("accounts.employees");
+var same = accounts.StateStore("employees");
 ```
 
 `AddKey` records declaration intent used by `DefineAsync` — named keys
@@ -87,7 +89,7 @@ is the iteration's freshness evidence.
 
 ```csharp
 await store.ClearAsync();                       // one journaled ClearAll
-await store.DropAsync();                        // or client.StateStores.DropAsync(name)
+await store.DropAsync();                        // or accounts.DropStateStoreAsync("employees")
 ```
 
 - `ClearAsync` empties the store as one durable, idempotent mutation;
@@ -95,8 +97,10 @@ await store.DropAsync();                        // or client.StateStores.DropAsy
 - `DropAsync` tombstones the definition — the name cannot be recreated
   and every data path refuses. Rows already applied on replicas remain
   until a bounded reclaim pass.
-- Feed-sourced stores: `client.StateStores.DefineAsync(spec, "accounts.events")`
-  materializes committed Feed history.
+- Feed-sourced stores: `accounts.DefineStateStoreAsync(spec, "events")`
+  materializes committed Feed history — the source feed resolves inside
+  the same Domain (or pass a `Feed`/`Scoped.Absolute` handle to source
+  across Domains).
 
 ### Feed-sourced named keys
 
@@ -105,10 +109,10 @@ committed source record maps to typed lookup values. Every key carries
 an `Extractor`:
 
 ```csharp
-var spec = StateStore.Named("accounts.tagged")
+var spec = StateStore.Named("tagged")
     .AddKey("passport", unique: true, extractor: Extractor.Metadata("pp"))
     .AddKey("department", extractor: Extractor.Json("dept"));
-var store = await client.StateStores.DefineAsync(spec, "accounts.events");
+var store = await accounts.DefineStateStoreAsync(spec, "events");
 ```
 
 `Extractor.RecordKey()` reads the record's key,
@@ -161,7 +165,7 @@ await client.CommandsAsync(new[]
 | `AddKey` #11 / duplicate / blank | `InvalidOperationException` / `ArgumentException` | Declaration contract (10-key bound, distinct names). |
 | `DefineAsync` spec + `source` + bare named keys | `ArgumentException` | Feed-sourced keys need an `Extractor` — checked before the call. |
 | `DefineAsync` manual spec + `Extractor` | `ArgumentException` | Extractors apply to feed-sourced stores only. |
-| Data op on unbound spec | `InvalidOperationException` | `StateStore.Named` builds a spec; bind via `DefineAsync` or `client.StateStore(name)`. |
+| Data op on unbound spec | `InvalidOperationException` | `StateStore.Named` builds a spec; bind via `domain.DefineStateStoreAsync` or `domain.StateStore(name)`. |
 | `float`/`double`/`decimal` named value | `ArgumentException` | The wire carries exact i64 — pass an integral type. |
 | Undeclared named key / missing store | `WhitewaterException` 400 | Server-side contract — fix the declaration. |
 | `mutationId` reused differently | `WhitewaterException` 409 | Retry with the original contents or a fresh ID. |

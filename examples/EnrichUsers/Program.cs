@@ -25,26 +25,24 @@ var client = new WhitewaterClient(
         new Uri("http://localhost:7373"),
     });
 
-await client.CreateDomainAsync("app");
-await client.CreateFeedAsync("app.users.update.request");
-await client.CreateFeedAsync("app.users.update.enriched.request");
-await client.CreateFeedAsync("app.users.update.dlq");
+var app = await client.CreateDomainAsync("app");
+await app.CreateFeedAsync("users.update.request");
+await app.CreateFeedAsync("users.update.enriched.request");
+await app.CreateFeedAsync("users.update.dlq");
 // Manual stores: profiles declares the "user_id" named secondary key the
 // fallback lookup queries; stats takes named values on each Put.
-await client.StateStores.DefineAsync(
-    StateStore.Named("app.users.profiles").AddKey("user_id", unique: true));
-await client.StateStores.DefineAsync(StateStore.Named("app.users.stats"));
+await app.DefineStateStoreAsync(
+    StateStore.Named("users.profiles").AddKey("user_id", unique: true));
+await app.DefineStateStoreAsync(StateStore.Named("users.stats"));
 
-var input = client.Feed(
-    "app.users.update.request", Codecs.Json<UpdateRequest>());
-var output = client.Feed(
-    "app.users.update.enriched.request", Codecs.Json<EnrichedUpdate>());
-var dlq = client.Feed("app.users.update.dlq", Codecs.Json<DeadLetter>());
+var input = app.Feed("users.update.request", Codecs.Json<UpdateRequest>());
+var output = app.Feed("users.update.enriched.request", Codecs.Json<EnrichedUpdate>());
+var dlq = app.Feed("users.update.dlq", Codecs.Json<DeadLetter>());
 
-var profiles = client.Store<string, UserProfile>(
-    "app.users.profiles", Codecs.Utf8, Codecs.Json<UserProfile>());
-var counters = client.Store<string, long>(
-    "app.users.stats", Codecs.Utf8, Codecs.Json<long>());
+var profiles = app.Store<string, UserProfile>(
+    "users.profiles", Codecs.Utf8, Codecs.Json<UserProfile>());
+var counters = app.Store<string, long>(
+    "users.stats", Codecs.Utf8, Codecs.Json<long>());
 
 var outWriter = await output.WriterAsync("enricher");
 var dlqWriter = await dlq.WriterAsync("enricher");

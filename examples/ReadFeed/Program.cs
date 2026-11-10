@@ -6,7 +6,7 @@ using Whitewater;
 // pattern for applications, versus the ephemeral tail in TailFeed.
 //
 // For a managed loop — auto-provisioning, retry policy, and an
-// IAsyncDisposable handle — use client.Subscribe(...) instead of this
+// IAsyncDisposable handle — use feed.ConsumeAsync(...) instead of this
 // explicit form.
 //
 // The loop below is explicit — Whitewater Readers pull rather than push:
@@ -16,6 +16,11 @@ using Whitewater;
 // Ack is the commit point: acknowledged progress is durable, so a
 // restarted client resumes after the last acked position. Process
 // records BEFORE acking them — ack-then-crash loses those records.
+//
+// Everything hangs off the Domain: feeds, readers, writers,
+// subscriptions, pipes, stores. Names compose inside the Domain —
+// demo.Feed("tail") binds demo.tail; demo.Reader("reader") binds
+// demo.reader.
 
 var client = new WhitewaterClient(
     "whitewater-local-development-admin-key",
@@ -26,13 +31,17 @@ var client = new WhitewaterClient(
         new Uri("http://localhost:7373"),
     });
 
-// One-time provisioning: the Reader declaration is durable Control
-// Plane state, not a per-session object.
-await client.CreateDomainAsync("demo");
-await client.CreateFeedAsync("demo.tail");
-await client.CreateReaderAsync("demo.reader", "demo.tail", ReaderStart.Beginning());
+// One-time provisioning: CreateDomainAsync returns the Domain handle;
+// feed and Reader declarations are durable Control Plane state, not
+// per-session objects.
+var demo = await client.CreateDomainAsync("demo");
+await demo.CreateFeedAsync("tail");
+await demo.CreateReader("tail")
+    .ReaderId("reader")
+    .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
+    .DeclareAsync();
 
-var reader = client.Reader("demo.reader");
+var reader = demo.Reader("reader"); // resolves demo.reader
 
 // OpenAsync fences this client as the session owner. Another client
 // opening the same Reader supersedes this session (stale_epoch on the

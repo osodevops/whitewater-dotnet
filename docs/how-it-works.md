@@ -9,11 +9,18 @@ other network paths. JSON is `System.Text.Json` (`JsonObject`/
 
 ```
 WhitewaterClient ─┬─ WclAsync / CommandsAsync / HealthyAsync → POST /v1/admin/*
-                  ├─ CreateFeedAsync / DescribeFeedAsync / … → typed WCL builders
-                  ├─ Feeds   → FeedClient                    → /v1/feeds/*, /v1/readers/temporary/fetch
-                  ├─ Writer(name, epoch)                     → /v1/writers/append[-batch]
-                  ├─ Reader(name)                            → /v1/readers/open|fetch|ack|close
-                  └─ SubscriptionMember(name)                → /v1/subscriptions/members/*
+                  ├─ Domain catalog: Create/Get/Describe/Rename/Drop/List
+                  │    Domain, Role, Grant                        → typed WCL builders
+                  ├─ Riverbed observability: Demand*/HotKeys      → /v1/admin/commands
+                  └─ Domain(name) — the ONLY front door to domain-scoped
+                     resources. Every name resolves inside the Domain:
+                       ├─ Feed / CreateFeedAsync        → /v1/feeds/*, /v1/readers/temporary/fetch
+                       ├─ Writer(name, epoch)           → /v1/writers/append[-batch]
+                       ├─ Reader(name)                  → /v1/readers/open|fetch|ack|close
+                       ├─ Member(subscription)          → /v1/subscriptions/members/*
+                       ├─ Store / StateStore            → /v1/statestores/*
+                       ├─ Pipe / Define*PipeAsync       → /v1/admin/commands
+                       └─ QueryIndexAsync               → /v1/indexes/query
        │                      │
     Transport            Wire (codec)
   (endpoints,         (request building,
@@ -40,12 +47,28 @@ Keys, payloads, and metadata values are base64 `byte[]`;
 `event_time_ns`/`ingest_time_ns` are `long` nanoseconds on decimal
 strings. Cursors stay opaque strings.
 
-## Resource management — two doors, one room
+## Resource management — the Domain is the front door
 
 `WclAsync(script)` sends raw WCL to `POST /v1/admin/wcl`. The typed
 methods are thin builders over it —
-`CreateFeedAsync("orders.events")` serializes
-`CREATE FEED orders.events` and calls `WclAsync` internally.
+`domain.CreateFeedAsync("orders")` serializes
+`CREATE FEED shop.orders` and calls `WclAsync` internally.
+
+The public surface has exactly two scopes:
+
+- **Riverbed scope (client):** the Domain catalog itself — create,
+  get, describe, rename, drop, list Domains — plus Roles, Grants,
+  demand observability, `WclAsync`, and `CommandsAsync`.
+- **Domain scope:** every Feed, Writer, Reader, Subscription, StateStore,
+  Index, and Pipe lives inside a Domain and is only reachable through
+  it. A relative name resolves to `<domain>.<name>`; a name already
+  prefixed with the Domain passes through. There is no client-level
+  `createFeed`/`feed`/`reader`/`writer` — a "randomly named" resource
+  cannot exist outside a Domain.
+
+`CreateDomainAsync` returns the `Domain` handle itself, so the natural
+flow is `var shop = await client.CreateDomainAsync("shop")` →
+`await shop.CreateFeedAsync("orders")`.
 
 Two validators run before interpolation, throwing
 `ArgumentException` locally:
@@ -82,20 +105,19 @@ The same calls through the typed builders — each serializes one WCL
 statement and calls `WclAsync` internally:
 
 ```csharp
-await client.CreateDomainAsync("shop");              // CREATE DOMAIN shop;
-var shop = await client.GetDomainAsync("shop");      // verifies + materializes
+var shop = await client.CreateDomainAsync("shop");   // CREATE DOMAIN shop;
 await shop.CreateFeedAsync("orders");                // CREATE FEED shop.orders;
-await client.CreateWriterAsync("orders.writer", "shop.orders");
-await client.OpenWriterSessionAsync("orders.writer");// epoch in .Data
-await client.CreateReaderAsync("audit", "shop.orders", ReaderStart.Beginning());
-await client.ListFeedsAsync();                       // SHOW FEEDS;
-await client.SeekReaderAsync("audit", ReaderStart.Now()); // SEEK ... TO NOW;
-await client.DropFeedAsync("shop.orders");           // DROP FEED shop.orders;
+await shop.CreateWriterAsync("orders.writer", "orders");
+await shop.OpenWriterSessionAsync("orders.writer");  // epoch in .Data
+await shop.CreateReaderAsync("audit", "orders", ReaderStart.Beginning());
+await shop.FeedNamesAsync();                         // ['shop.orders', ...]
+await shop.SeekReaderAsync("audit", ReaderStart.Now()); // SEEK ... TO NOW;
+await shop.DropFeedAsync("orders");                  // DROP FEED shop.orders;
 ```
 
-`client.CreateFeedAsync("shop.orders")` with the fully-qualified name is
-the flat-name equivalent; `domain.CreateFeedAsync("orders")` composes
-the Domain prefix for you.
+Every name is resolved inside the Domain — `shop.DropFeedAsync("orders")`
+drops `shop.orders`. Passing a name already prefixed with the Domain
+(`"shop.orders"`) is accepted as the same resource.
 ```
 
 `client.CommandsAsync(...)` is the second door — the typed JSON
@@ -120,8 +142,9 @@ await client.CommandsAsync(new[]
 });
 ```
 
-(`client.StateStores.DefineAsync(spec)` posts exactly this body for
-you.) `DROP` is spelled in WCL for every resource including stores:
+(`domain.DefineStateStoreAsync(spec)` posts exactly this body, with
+`spec.Name` resolved inside the Domain.) `DROP` is spelled in WCL for
+every resource including stores:
 `await client.WclAsync("DROP STATESTORE accounts.employees")` ≡
 `store.DropAsync()`.
 
@@ -129,39 +152,39 @@ you.) `DROP` is spelled in WCL for every resource including stores:
 
 Three shapes, in increasing durability:
 
-1. **`Feeds.RecordsAsync(feed, limit, after)`** — one-shot committed
+1. **`feed.RecordsAsync(limit, after)`** — one-shot committed
    history.
-2. **`Feeds.TemporaryFetchAsync(feed, options)`** — anonymous
-   ephemeral reader; `tail` + `wait_ms` is a server-side long-poll
-   returning early when records arrive. Continue with `NextCursor`,
-   never the last record's cursor.
-3. **`Reader(name)`** — durable independent cursor:
+2. **`feed.FetchAsync(options)`** — anonymous ephemeral reader;
+   `tail` + `wait_ms` is a server-side long-poll returning early
+   when records arrive. Continue with `NextCursor`, never the last
+   record's cursor.
+3. **`domain.Reader(name)`** — durable independent cursor:
    `OpenAsync` → `FetchAsync` → `AckAsync(deliveredCursor)` →
    `CloseAsync`. Progress survives restarts.
 
 Two managed wrappers sit on top of those primitives:
 
-- **`Feeds.LoadAsync(feed, start, sink)`** — one-shot bulk read: pages
-  `TemporaryFetchAsync` from `ReaderStart` until the frontier is
-  drained. `sink` is any `Func<IReadOnlyList<FeedRecord>, Task>`.
-- **`Subscribe(reader, feed, start, onRecords[, onError])`** — a durable
-  consume loop on a background task: provisions the Reader when missing,
-  then `OpenAsync` → [`FetchAsync` → `onRecords` → `AckAsync`] →
-  `CloseAsync`. Transient errors retry; `StaleSession` and hard refusals
-  terminate via `onError`/`sub.Failure`. `await sub.DisposeAsync()`
-  stops it.
+- **`feed.LoadAsync(start, sink)`** — one-shot bulk read: pages the
+  temporary fetch from `ReaderStart` until the frontier is drained.
+  `sink` is any `Func<IReadOnlyList<FeedRecord>, Task>`.
+- **`domain.Subscribe(reader, feed, start, onRecords[, onError])`** —
+  a durable consume loop on a background task: provisions the Reader
+  when missing, then `OpenAsync` → [`FetchAsync` → `onRecords` →
+  `AckAsync`] → `CloseAsync`. Transient errors retry; `StaleSession`
+  and hard refusals terminate via `onError`/`sub.Failure`.
+  `await sub.DisposeAsync()` stops it.
 
-`SubscriptionMember(sub)` is the lease vocabulary for cooperating
+`domain.Member(sub)` is the lease vocabulary for cooperating
 consumers: `JoinAsync` → `ClaimAsync`/`RenewAsync`/`ReleaseAsync` →
 `FetchAsync` → `AckAsync`.
 
 ## Writing
 
-- **Named session**: `OpenWriterSessionAsync(name)` returns a
-  `session_epoch` in `Results[0].Data`; bind `Writer(name, epoch)`
+- **Named session**: `domain.OpenWriterSessionAsync(name)` returns a
+  `session_epoch` in `Results[0].Data`; bind `domain.Writer(name, epoch)`
   and `AppendAsync` with a stable `Guid` request id per logical
   write.
-- **Ad-hoc**: `Feeds.AppendAsync(feed, record)` — ephemeral writer
+- **Ad-hoc**: `feed.AppendAsync(record)` — ephemeral writer
   identity; same request-id dedup rule.
 
 ## Testing

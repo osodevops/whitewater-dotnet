@@ -5,9 +5,12 @@ using Whitewater;
 // FetchAsync/RecordsAsync decodes — application code never touches
 // bytes.
 //
-//   orders.WriterAsync("ingest")    — declares the Writer + opens a session
-//   orders.ReaderAsync("audit", 64) — declares the Reader + opens a session
+//   orders.WriterAsync("ingest")    — declares demo.ingest + opens a session
+//   orders.ReaderAsync("audit", 64) — declares demo.audit + opens a session
 //   writer.AppendAsync / reader.FetchAsync / reader.AckAsync
+//
+// Everything hangs off the Domain — Writer/Reader names resolve inside
+// it, so "ingest" declares demo.ingest.
 
 var client = new WhitewaterClient(
     "whitewater-local-development-admin-key",
@@ -18,11 +21,11 @@ var client = new WhitewaterClient(
         new Uri("http://localhost:7373"),
     });
 
-await client.CreateDomainAsync("demo");
-await client.CreateFeedAsync("demo.orders");
+var demo = await client.CreateDomainAsync("demo");
+await demo.CreateFeedAsync("orders");
 
 // UTF-8 keys + JSON payloads — the payload codec is the one argument.
-var orders = client.Feed("demo.orders", Codecs.Json<Order>());
+var orders = demo.Feed("orders", Codecs.Json<Order>());
 
 // Declares "ingest" when missing and opens its epoch-fenced session.
 var writer = await orders.WriterAsync("ingest");

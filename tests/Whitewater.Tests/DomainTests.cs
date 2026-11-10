@@ -275,7 +275,7 @@ public class DomainTests
             .ReaderStartPoint(FirstTimeReaderStartPosition.End)
             .DeclareAsync();
 
-        var described = await client.DescribeReaderAsync("r1");
+        var described = await shop.DescribeReaderAsync("r1");
         Assert.Equal(
             "now",
             described.Results[0].Data["start"]!["kind"]!.GetValue<string>());

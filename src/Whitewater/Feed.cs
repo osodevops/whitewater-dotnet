@@ -269,34 +269,47 @@ public sealed class Feed<TKey, TValue>
     private readonly ICodec<TKey> _keyCodec;
     private readonly ICodec<TValue> _valueCodec;
     private readonly bool _compression;
+    private readonly Domain? _domain;
 
     internal Feed(
         WhitewaterClient client,
         string name,
         ICodec<TKey> keyCodec,
         ICodec<TValue> valueCodec,
-        bool compression = false)
+        bool compression = false,
+        Domain? domain = null)
     {
         _client = client;
         Name = name;
         _keyCodec = keyCodec;
         _valueCodec = valueCodec;
         _compression = compression;
+        _domain = domain;
     }
 
     /// <summary>The Feed's dotted name.</summary>
     public string Name { get; }
 
+    /// <summary>The Domain that bound this Feed — the scope Reader and
+    /// Writer names resolve inside.</summary>
+    public Domain? Domain => _domain;
+
+    /// <summary>The absolute Feed name travels as a cross-Domain
+    /// reference — a Pipe in another Domain can write to or read from
+    /// this Feed.</summary>
+    public static implicit operator Scoped(Feed<TKey, TValue> feed)
+        => Scoped.Absolute((feed ?? throw new ArgumentNullException(nameof(feed))).Name);
+
     /// <summary>Enable wire compression on fetches and ad-hoc appends
     /// through this facade.</summary>
     public Feed<TKey, TValue> UseCompression(bool enabled = true)
-        => new(_client, Name, _keyCodec, _valueCodec, enabled);
+        => new(_client, Name, _keyCodec, _valueCodec, enabled, _domain);
 
     /// <summary>Rebind the same feed under different codecs — no wire
     /// call: <c>feed.View(Codecs.Utf8, Codecs.Bytes)</c> reads raw.</summary>
     public Feed<TKey2, TValue2> View<TKey2, TValue2>(
         ICodec<TKey2> keyCodec, ICodec<TValue2> valueCodec)
-        => new(_client, Name, keyCodec, valueCodec, _compression);
+        => new(_client, Name, keyCodec, valueCodec, _compression, _domain);
 
     /// <summary>Committed records from the beginning or after an opaque
     /// <paramref name="after"/> Cursor, decoded through the bound
@@ -339,6 +352,7 @@ public sealed class Feed<TKey, TValue>
     public async Task<FeedWriter<TKey, TValue>> WriterAsync(
         string writerName, CancellationToken ct = default)
     {
+        writerName = InDomain(writerName);
         try
         {
             await _client.CreateWriterAsync(writerName, Name, ct).ConfigureAwait(false);
@@ -371,6 +385,7 @@ public sealed class Feed<TKey, TValue>
         string readerName, int maxPageSize = 64, ReaderStart? start = null,
         CancellationToken ct = default)
     {
+        readerName = InDomain(readerName);
         try
         {
             await _client.CreateReaderAsync(
@@ -420,7 +435,7 @@ public sealed class Feed<TKey, TValue>
         int? maxPageSize,
         Func<IReadOnlyList<FeedMessage<TKey, TValue>>, Task> onRecords,
         Action<WhitewaterException>? onError = null)
-        => _client.Subscribe(reader, Name, start,
+        => _client.Subscribe(InDomain(reader), Name, start,
             records => onRecords(DecodeMessages(records)), onError,
             maxPageSize ?? 128);
 
@@ -430,7 +445,7 @@ public sealed class Feed<TKey, TValue>
     /// <see cref="FeedConsumer{TKey, TValue}.RunAsync(Func{FeedMessage{TKey, TValue}, ValueTask}, CancellationToken)"/>
     /// a handler; open/fetch/ack/reopen/backoff stay internal.</summary>
     public FeedConsumer<TKey, TValue> Consumer(string reader)
-        => new(this, reader);
+        => new(this, InDomain(reader));
 
     /// <summary>Convenience for
     /// <c>Consumer(reader).Messages(ct)</c> — the one-line permanent
@@ -463,6 +478,13 @@ public sealed class Feed<TKey, TValue>
     private IReadOnlyList<FeedMessage<TKey, TValue>> DecodeMessages(
         IReadOnlyList<FeedRecord> records)
         => DecodeMessages(records, _keyCodec, _valueCodec);
+
+    /// <summary>Resource names (Readers, Writers) resolve inside the
+    /// owning Domain when this Feed was bound via
+    /// <see cref="Domain.Feed(string)"/>; handles bound directly keep
+    /// names verbatim.</summary>
+    private string InDomain(string name)
+        => _domain is { } domain ? domain.Resolve(name) : name;
 
     private FeedClient Feeds() => _client.Feeds.UseCompression(_compression);
 }

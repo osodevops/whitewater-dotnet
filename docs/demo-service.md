@@ -16,8 +16,7 @@ var client = new WhitewaterClient(
     endpoints: new[] { new Uri("http://localhost:7371"), new Uri("http://localhost:7372") });
 
 // ---- provision ------------------------------------------------------
-await client.CreateDomainAsync("shop");
-var shop = await client.GetDomainAsync("shop");
+var shop = await client.CreateDomainAsync("shop");  // returns the Domain
 await shop.CreateFeedAsync("orders");
 await shop.CreateFeedAsync("orders.dlq");       // dead-letter feed
 
@@ -25,13 +24,13 @@ await shop.CreateFeedAsync("orders.dlq");       // dead-letter feed
 // The default Feed binds UTF-8 strings — the SDK serializes, never
 // GetBytes; plain JSON flows with no codec binding.
 var orders = shop.Feed("orders");
-var writer = await shop.CreateWriter(orders).WriterId("orders.ingest").OpenAsync();
+var writer = await shop.CreateWriter(orders).WriterId("ingest").OpenAsync();
 await writer.AppendAsync("order-1", "{\"total\":42}");
 
 // ---- consume ----------------------------------------------------------
 var dlq = shop.Feed("orders.dlq");
 var deadLetter = await shop.CreateWriter(dlq)
-    .WriterId("fulfillment.dlq").OpenAsync();
+    .WriterId("dlq").OpenAsync();
 await using var reader = await shop.CreateReader(orders)
     .ReaderId("fulfillment")                            // durable id — survives restarts
     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning) // first-declare only

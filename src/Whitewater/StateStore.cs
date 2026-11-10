@@ -51,6 +51,12 @@ public sealed class StateStore
     /// <summary>The store's dotted name.</summary>
     public string Name { get; }
 
+    /// <summary>The absolute store name travels as a cross-Domain
+    /// reference — a Pipe in another Domain can enrich from or write
+    /// into this store.</summary>
+    public static implicit operator Scoped(StateStore store)
+        => Scoped.Absolute((store ?? throw new ArgumentNullException(nameof(store))).Name);
+
     /// <summary>
     /// Declare a named secondary key for Define (at most
     /// <see cref="MaxNamedKeys"/>). <paramref name="extractor"/> declares

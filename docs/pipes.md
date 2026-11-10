@@ -13,6 +13,9 @@ does not need to stay alive for a Pipe to keep going.
 
 ```csharp
 var client = new WhitewaterClient("localhost:7371", apiKey);
+var ops = await client.GetDomainAsync("ops");
+// Everything below resolves inside ops — "orders.sub" means
+// ops.orders.sub. For cross-Domain endpoints, see §8.
 ```
 
 ## 1. Prerequisites: subscriptions and stores
@@ -21,26 +24,27 @@ Every Pipe names a **Subscription** — the durable delivery lease it pulls
 input through. Declare one per Pipe:
 
 ```csharp
-await client.CreateSubscriptionAsync("orders.sub", "ops.orders");
+await ops.CreateSubscriptionAsync("orders.sub", "orders");
+// → CREATE SUBSCRIPTION ops.orders.sub FROM ops.orders
 // start defaults to ReaderStart.Beginning(); pass ReaderStart.Now()/Cursor()/TimestampNs()
 ```
 
 `enrich` and `window` pipes need a **StateStore** (see `docs/stores.md`):
 
 ```csharp
-var spec = StateStore.Named("ops.customers")
+var spec = StateStore.Named("customers")
     .AddKey("email", unique: true, extractor: Extractor.Json("$.email"))
     .AddKey("tier", extractor: Extractor.Json("$.tier"));
-var store = await client.StateStores.DefineAsync(spec, "ops.customer.changes");
+var store = await ops.DefineStateStoreAsync(spec);   // declares ops.customers
 ```
 
 ## 2. Forward pipes
 
 ```csharp
-await client.DefineForwardPipeAsync(
-    "ops.orders.relay",   // pipe name (dotted)
-    "orders.sub",         // source subscription
-    "ops.orders.relayed"); // output feed
+await ops.DefineForwardPipeAsync(
+    "orders.relay",    // pipe name → ops.orders.relay
+    "orders.sub",      // source subscription → ops.orders.sub
+    "orders.relayed"); // output feed → ops.orders.relayed
 ```
 
 ## 3. Enrich pipes
@@ -51,17 +55,17 @@ against the store, and copy the matched row into output metadata
 journal — replayed outputs are byte-identical.
 
 ```csharp
-await client.DefineEnrichPipeAsync(
-    "ops.orders.enrich",
+await ops.DefineEnrichPipeAsync(
+    "orders.enrich",
     "orders.sub",
-    "ops.enriched",
-    "ops.customers",                  // lookup store
+    "enriched",
+    "customers",                      // lookup store → ops.customers
     PipeOperation.Enrich(
         Extractor.Json("$.customerId"),
         freshness: EnrichFreshness.Latest,   // or EnrichFreshness.Strict
         named: "email",                      // named key; null = primary
         onMiss: EnrichMiss.Quarantine),      // Forward | Drop | Quarantine
-    quarantineFeed: "ops.enrich.misses");    // required for Quarantine
+    quarantineFeed: "enrich.misses");        // required for Quarantine
 ```
 
 ## 4. Window pipes
@@ -71,13 +75,13 @@ must carry non-unique named keys `key` and `pane` so pane rows stay
 enumerable without composite row keys:
 
 ```csharp
-await client.StateStores.DefineAsync(
-    StateStore.Named("ops.order.counts").AddKey("key").AddKey("pane"));
+await ops.DefineStateStoreAsync(
+    StateStore.Named("order.counts").AddKey("key").AddKey("pane"));
 
-await client.DefineWindowPipeAsync(
-    "ops.orders.hourly",
+await ops.DefineWindowPipeAsync(
+    "orders.hourly",
     "orders.sub",
-    "ops.order.counts",               // pane store (declared above)
+    "order.counts",                   // pane store (declared above)
     PipeOperation.Window(
         window: TimeSpan.FromHours(1),   // 1h panes
         key: Extractor.Json("$.region"),
@@ -87,7 +91,7 @@ await client.DefineWindowPipeAsync(
         grace: TimeSpan.FromMinutes(1),  // revise emitted panes up to 1min late
         expire: TimeSpan.FromDays(1),    // keep panes 24h
         keyLimit: 10_000L),
-    emitFeed: "ops.hourly.emits");     // optional closed-pane output
+    emitFeed: "hourly.emits");         // optional closed-pane output
 ```
 
 Every window duration is a `TimeSpan` — the SDK extracts nanoseconds
@@ -115,28 +119,65 @@ WindowAggregation.Average(Extractor.Json("$.rtt"))
 ## 5. Lifecycle
 
 ```csharp
-var pipe = client.Pipe("ops.orders.relay");
+var pipe = ops.Pipe("orders.relay");
 
 var info = await pipe.DescribeAsync(); // stage, operation, outputs, status
 await pipe.PauseAsync();               // cooperative; the frontier stays put
 await pipe.ResumeAsync();              // restarts from the durable frontier
 await pipe.DropAsync();
 
-var all = await client.PipesAsync();
+var all = await ops.PipesAsync();
 ```
 
 `Pause` is durable and idempotent — nothing is dropped while paused.
 `Describe` returns `stage` (`declared`/`paused`), the opaque `Operation`
 node, and output Feed/Store IDs.
 
-## 6. Watching demand
+## 6. Pipes that cross Domains
+
+A Pipe is always declared inside one Domain — but its Subscription
+source, output Feed, lookup Store, and quarantine Feed may live in
+**other** Domains. Plain string arguments resolve inside the Pipe's
+owning Domain; a cross-Domain endpoint is passed as a **handle** — a
+`Feed`/`Store`/`StateStore`/`SubscriptionRef` from the other Domain,
+or `Scoped.Absolute("name")`. Handles carry their absolute name, so a
+cross-Domain reference is explicit in the code, never guessed from a
+dotted string:
+
+```csharp
+var purchasing = await client.GetDomainAsync("purchasing");
+var warehouse = await client.GetDomainAsync("warehouse");
+
+// purchasing declares the Pipe; its source is in-domain ("fulfil" →
+// purchasing.fulfil) while the output feed lives in warehouse.
+await purchasing.DefineForwardPipeAsync(
+    "relay", "fulfil", warehouse.Feed("inbound"));
+// → DEFINE PIPE purchasing.relay FROM purchasing.fulfil
+//     TO FEED warehouse.inbound
+
+// Or the pull shape — warehouse owns the Pipe and draws from
+// purchasing's Subscription:
+await warehouse.DefineForwardPipeAsync(
+    "pull", purchasing.Subscription("fulfil"), "inbound");
+// → DEFINE PIPE warehouse.pull FROM purchasing.fulfil
+//     TO FEED warehouse.inbound
+
+// Scoped.Absolute is the handle-free explicit form:
+await purchasing.DefineEnrichPipeAsync(
+    "enrich", "fulfil", "orders.enriched",
+    Scoped.Absolute("crm.customers"),
+    PipeOperation.Enrich(Extractor.RecordKey(), onMiss: EnrichMiss.Drop),
+    quarantineFeed: null);
+```
+
+## 7. Watching demand
 
 ```csharp
 var demand = await client.DemandPipesAsync();
 foreach (var row in demand.Rows) Console.WriteLine($"{row.Name} {row.Stage}");
 ```
 
-## 7. Failure semantics
+## 8. Failure semantics
 
 - Declarations commit atomically inside a `CommandsAsync` batch — submit
   subscription + `define_pipe` in one batch to apply both or neither.

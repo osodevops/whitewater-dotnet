@@ -16,9 +16,9 @@ namespace Whitewater;
 /// await shop.FeedsAsync("order");                    // prefix-filtered
 /// await shop.ReadersAsync(); await shop.WritersAsync();
 ///
-/// await using var reader = await client
-///     .CreateReader(shop, shop.Feed("orders"))
-///     .ReaderId("fulfillment")                       // the Kafka groupId analogue
+/// await using var reader = await shop
+///     .CreateReader("orders")
+///     .ReaderId("fulfillment")                       // resolves shop.fulfillment
 ///     .ReaderStartPoint(FirstTimeReaderStartPosition.Beginning)
 ///     .MaxPageSize(256)
 ///     .OpenAsync();
@@ -73,7 +73,7 @@ public sealed class Domain
     public async Task<FeedSchema?> FeedSchemaAsync(string feed, CancellationToken ct = default)
     {
         var snap = await SnapAsync(ct).ConfigureAwait(false);
-        return snap.FeedSchemas.TryGetValue(feed, out var schema) ? schema : null;
+        return snap.FeedSchemas.TryGetValue(Resolve(feed), out var schema) ? schema : null;
     }
 
     /// <summary>Only the sides the Feed itself declares — null when it
@@ -81,7 +81,7 @@ public sealed class Domain
     public async Task<FeedSchema?> DeclaredFeedSchemaAsync(string feed, CancellationToken ct = default)
     {
         var snap = await SnapAsync(ct).ConfigureAwait(false);
-        return snap.DeclaredSchemas.TryGetValue(feed, out var schema) ? schema : null;
+        return snap.DeclaredSchemas.TryGetValue(Resolve(feed), out var schema) ? schema : null;
     }
 
     // ---- scoped resources -------------------------------------------------
@@ -153,17 +153,17 @@ public sealed class Domain
     /// Pure name composition — no I/O.
     /// </summary>
     public Feed<string, string> Feed(string relative)
-        => new(_client, Resolve(relative), Codecs.Utf8, Codecs.Utf8);
+        => new(_client, Resolve(relative), Codecs.Utf8, Codecs.Utf8, domain: this);
 
     /// <summary><see cref="Feed(string)"/> with UTF-8 keys and payloads
     /// of <typeparamref name="TValue"/>.</summary>
     public Feed<string, TValue> Feed<TValue>(string relative, ICodec<TValue> valueCodec)
-        => new(_client, Resolve(relative), Codecs.Utf8, valueCodec);
+        => new(_client, Resolve(relative), Codecs.Utf8, valueCodec, domain: this);
 
     /// <summary><see cref="Feed(string)"/> with a typed key codec too.</summary>
     public Feed<TKey, TValue> Feed<TKey, TValue>(
         string relative, ICodec<TKey> keyCodec, ICodec<TValue> valueCodec)
-        => new(_client, Resolve(relative), keyCodec, valueCodec);
+        => new(_client, Resolve(relative), keyCodec, valueCodec, domain: this);
 
     /// <summary>Alias of <see cref="Feed(string)"/>.</summary>
     public Feed<string, string> GetFeed(string relative) => Feed(relative);
@@ -212,6 +212,299 @@ public sealed class Domain
     public WriterBuilder<TKey, TValue> CreateWriter<TKey, TValue>(
         Feed<TKey, TValue> feed)
         => _client.CreateWriter(this, feed);
+
+    /// <summary>
+    /// An absolute cross-Domain reference to a resource inside this
+    /// Domain — pass it to another Domain's Pipe definition and it
+    /// still points here: <c>warehouse.DefineForwardPipeAsync("pull",
+    /// purchasing.Scoped("fulfil"), "inbound")</c>. Handles
+    /// (<see cref="Feed{TKey,TValue}"/>, <see cref="Store{TKey,TValue}"/>,
+    /// <see cref="StateStore"/>, <see cref="SubscriptionRef"/>) carry
+    /// the same weight.
+    /// </summary>
+    public Scoped Scoped(string relative) => Whitewater.Scoped.Absolute(Resolve(relative));
+
+    /// <summary><c>CREATE WRITER &lt;name&gt; TO &lt;feed&gt;</c> — both
+    /// names resolve inside this Domain.</summary>
+    public Task<ControlExecution> CreateWriterAsync(
+        string writer, string feed, CancellationToken ct = default)
+        => _client.CreateWriterAsync(Resolve(writer), Resolve(feed), ct);
+
+    /// <summary><c>CREATE READER &lt;name&gt; FROM &lt;feed&gt;</c> — both
+    /// names resolve inside this Domain; <paramref name="start"/>
+    /// applies on first declare.</summary>
+    public Task<ControlExecution> CreateReaderAsync(
+        string reader, string feed,
+        ReaderStart? start = null, CancellationToken ct = default)
+        => _client.CreateReaderAsync(Resolve(reader), Resolve(feed), start, ct);
+
+    // ---- Subscriptions -------------------------------------------------
+
+    /// <summary><c>CREATE SUBSCRIPTION &lt;name&gt; FROM &lt;feed&gt;</c>
+    /// — both names resolve inside this Domain:
+    /// <c>pipes.CreateSubscriptionAsync("audit", "orders")</c> declares
+    /// <c>pipes.audit</c> on <c>pipes.orders</c>.</summary>
+    public Task<ControlExecution> CreateSubscriptionAsync(
+        string name, string feed, ReaderStart? start = null, CancellationToken ct = default)
+        => _client.CreateSubscriptionAsync(Resolve(name), Resolve(feed), start, ct);
+
+    /// <summary>A <see cref="SubscriptionRef"/> handle on the declared
+    /// Subscription <paramref name="relative"/> inside this Domain —
+    /// open member sessions with <see cref="SubscriptionRef.Member"/> or
+    /// pass it to another Domain's Pipe definition to drive from this
+    /// Subscription.</summary>
+    public SubscriptionRef Subscription(string relative)
+        => new(_client, Resolve(relative));
+
+    /// <summary>A member-session client on the Subscription
+    /// <paramref name="relative"/> inside this Domain — join, claim
+    /// work, fetch, commit.</summary>
+    public SubscriptionMemberClient Member(string relative)
+        => _client.SubscriptionMember(Resolve(relative));
+
+    /// <summary>A running feed subscription: ensures the Reader
+    /// <paramref name="reader"/> (resolved in-domain) exists on the Feed
+    /// <paramref name="feed"/> (also resolved), then pumps fetched
+    /// pages to <paramref name="onRecords"/>, acknowledging durable
+    /// progress per batch.</summary>
+    public Subscription Subscribe(
+        string reader,
+        string feed,
+        ReaderStart start,
+        Func<IReadOnlyList<FeedRecord>, Task> onRecords,
+        Action<WhitewaterException>? onError = null,
+        int maxPageSize = 128)
+        => new(_client, Resolve(reader), Resolve(feed), start,
+            maxPageSize, onRecords, onError);
+
+    // ---- Reader / Writer sessions and lifecycle -------------------------
+
+    /// <summary>A session client on the Reader <paramref name="relative"/>
+    /// inside this Domain — open/fetch/ack/close.</summary>
+    public ReaderSessionClient Reader(string relative)
+        => _client.Reader(Resolve(relative));
+
+    /// <summary>A session client on the Writer <paramref name="relative"/>
+    /// inside this Domain at the fencing <paramref name="sessionEpoch"/>.</summary>
+    public WriterSessionClient Writer(string relative, long sessionEpoch)
+        => _client.Writer(Resolve(relative), sessionEpoch);
+
+    /// <summary><c>OPEN WRITER SESSION &lt;name&gt;</c> — the returned
+    /// epoch fences the session.</summary>
+    public Task<ControlExecution> OpenWriterSessionAsync(
+        string writer, CancellationToken ct = default)
+        => _client.OpenWriterSessionAsync(Resolve(writer), ct);
+
+    /// <summary><c>SEEK READER &lt;name&gt; TO &lt;start&gt;</c> —
+    /// repositions a durable Reader.</summary>
+    public Task<ControlExecution> SeekReaderAsync(
+        string reader, ReaderStart start, CancellationToken ct = default)
+        => _client.SeekReaderAsync(Resolve(reader), start, ct);
+
+    /// <summary><c>DESCRIBE FEED &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DescribeFeedAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DescribeFeedAsync(Resolve(relative), ct);
+
+    /// <summary><c>DESCRIBE WRITER &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DescribeWriterAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DescribeWriterAsync(Resolve(relative), ct);
+
+    /// <summary><c>DESCRIBE READER &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DescribeReaderAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DescribeReaderAsync(Resolve(relative), ct);
+
+    /// <summary><c>DESCRIBE SUBSCRIPTION &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DescribeSubscriptionAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DescribeSubscriptionAsync(Resolve(relative), ct);
+
+    /// <summary><c>RENAME FEED &lt;current&gt; TO &lt;renamed&gt;</c> —
+    /// both names resolve inside this Domain.</summary>
+    public Task<ControlExecution> RenameFeedAsync(
+        string current, string renamed, CancellationToken ct = default)
+        => _client.RenameFeedAsync(Resolve(current), Resolve(renamed), ct);
+
+    /// <summary><c>RENAME WRITER &lt;current&gt; TO &lt;renamed&gt;</c></summary>
+    public Task<ControlExecution> RenameWriterAsync(
+        string current, string renamed, CancellationToken ct = default)
+        => _client.RenameWriterAsync(Resolve(current), Resolve(renamed), ct);
+
+    /// <summary><c>RENAME READER &lt;current&gt; TO &lt;renamed&gt;</c></summary>
+    public Task<ControlExecution> RenameReaderAsync(
+        string current, string renamed, CancellationToken ct = default)
+        => _client.RenameReaderAsync(Resolve(current), Resolve(renamed), ct);
+
+    /// <summary><c>RENAME SUBSCRIPTION &lt;current&gt; TO &lt;renamed&gt;</c></summary>
+    public Task<ControlExecution> RenameSubscriptionAsync(
+        string current, string renamed, CancellationToken ct = default)
+        => _client.RenameSubscriptionAsync(Resolve(current), Resolve(renamed), ct);
+
+    /// <summary><c>DROP FEED &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DropFeedAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DropFeedAsync(Resolve(relative), ct);
+
+    /// <summary><c>DROP WRITER &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DropWriterAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DropWriterAsync(Resolve(relative), ct);
+
+    /// <summary><c>DROP READER &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DropReaderAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DropReaderAsync(Resolve(relative), ct);
+
+    /// <summary><c>DROP SUBSCRIPTION &lt;name&gt;</c></summary>
+    public Task<ControlExecution> DropSubscriptionAsync(
+        string relative, CancellationToken ct = default)
+        => _client.DropSubscriptionAsync(Resolve(relative), ct);
+
+    // ---- Pipes -------------------------------------------------------------
+    // A Pipe is declared inside this Domain — its name resolves here —
+    // but its Subscription source and output Feed/StateStore may point at
+    // other Domains: pass the other Domain's handles or Scoped.Absolute
+    // for those; plain strings resolve inside this Domain.
+
+    /// <summary>A lifecycle handle on the Pipe <paramref name="relative"/>
+    /// inside this Domain — Describe/Pause/Resume/Drop.</summary>
+    public Pipe Pipe(string relative) => _client.Pipe(Resolve(relative));
+
+    /// <summary>The declared Pipes inside this Domain.</summary>
+    public async Task<IReadOnlyList<PipeInfo>> PipesAsync(CancellationToken ct = default)
+    {
+        var prefix = Name + ".";
+        return (await _client.PipesAsync(ct).ConfigureAwait(false))
+            .Where(pipe => pipe.Name.StartsWith(prefix, StringComparison.Ordinal))
+            .ToList();
+    }
+
+    /// <summary><c>DEFINE PIPE &lt;name&gt; FROM &lt;subscription&gt; TO FEED
+    /// &lt;outputFeed&gt;</c> — the copy Pipe. The Pipe name resolves inside
+    /// this Domain; <paramref name="subscription"/> and
+    /// <paramref name="outputFeed"/> accept a relative name (in-domain),
+    /// a <see cref="Feed{TKey,TValue}"/>/<see cref="SubscriptionRef"/>
+    /// handle, or <see cref="Scoped.Absolute"/> for cross-Domain.</summary>
+    public Task<ControlExecution> DefineForwardPipeAsync(
+        string name, Scoped subscription, Scoped outputFeed, CancellationToken ct = default)
+        => _client.DefineForwardPipeAsync(
+            Resolve(name), subscription.Resolve(this), outputFeed.Resolve(this), ct);
+
+    /// <summary><c>DEFINE PIPE … ENRICH FROM &lt;store&gt;</c> — point-lookup
+    /// enrichment; <paramref name="quarantineFeed"/> resolves the
+    /// miss-quarantine target when the operation's miss disposition is
+    /// <see cref="EnrichMiss.Quarantine"/>.</summary>
+    public Task<ControlExecution> DefineEnrichPipeAsync(
+        string name,
+        Scoped subscription,
+        Scoped outputFeed,
+        Scoped store,
+        PipeOperation operation,
+        Scoped? quarantineFeed = null,
+        CancellationToken ct = default)
+        => _client.DefineEnrichPipeAsync(
+            Resolve(name), subscription.Resolve(this), outputFeed.Resolve(this),
+            store.Resolve(this), operation, quarantineFeed?.Resolve(this), ct);
+
+    /// <summary><c>DEFINE PIPE … TO STATESTORE &lt;store&gt;</c> —
+    /// rolling-window aggregation; <paramref name="emitFeed"/> optionally
+    /// emits closed panes and requires the operation declare a lateness
+    /// bound (<c>max_late_ns</c> or <c>watermark_ns</c>).</summary>
+    public Task<ControlExecution> DefineWindowPipeAsync(
+        string name,
+        Scoped subscription,
+        Scoped outputStore,
+        PipeOperation operation,
+        Scoped? emitFeed = null,
+        CancellationToken ct = default)
+        => _client.DefineWindowPipeAsync(
+            Resolve(name), subscription.Resolve(this), outputStore.Resolve(this),
+            operation, emitFeed?.Resolve(this), ct);
+
+    // ---- StateStores --------------------------------------------------------
+
+    /// <summary>A byte-level StateStore facade on <paramref name="relative"/>
+    /// inside this Domain — rows live on the Nodes (RF3 + Fjall).</summary>
+    public StateStore StateStore(string relative)
+        => Whitewater.StateStore.Bound(_client.Transport, Resolve(relative));
+
+    /// <summary>A codec-bound <see cref="Store{TKey,TValue}"/> facade on
+    /// <paramref name="relative"/> inside this Domain.</summary>
+    public Store<string, TValue> Store<TValue>(string relative, ICodec<TValue> valueCodec)
+        => Whitewater.Store<string, TValue>.Bind(StateStore(relative), Codecs.Utf8, valueCodec);
+
+    /// <inheritdoc cref="Store{TValue}(string, ICodec{TValue})"/>
+    public Store<TKey, TValue> Store<TKey, TValue>(
+        string relative, ICodec<TKey> keyCodec, ICodec<TValue> valueCodec)
+        => Whitewater.Store<TKey, TValue>.Bind(StateStore(relative), keyCodec, valueCodec);
+
+    /// <summary>The default binding — UTF-8 keys and untouched payload
+    /// bytes.</summary>
+    public Store<string, string> Store(string relative)
+        => Whitewater.Store<string, string>.Bind(StateStore(relative), Codecs.Utf8, Codecs.Utf8);
+
+    /// <summary>
+    /// Declare <paramref name="spec"/> inside this Domain — the spec's
+    /// name resolves in-domain. <paramref name="source"/> names a
+    /// same-Domain Feed the store materializes from (null = manual);
+    /// feed-sourced named keys must each declare an
+    /// <see cref="Extractor"/>.
+    /// </summary>
+    public Task<StateStore> DefineStateStoreAsync(
+        StateStore spec, Scoped? source = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        var resolved = Whitewater.StateStore.Named(Resolve(spec.Name));
+        foreach (var key in spec.NamedKeys)
+        {
+            resolved.AddKey(key.Name, key.Unique, key.Extractor);
+        }
+        return _client.StateStores.DefineAsync(resolved, source?.Resolve(this), ct);
+    }
+
+    /// <summary><c>DROP STATESTORE</c>: tombstone the named store.</summary>
+    public Task<ControlExecution> DropStateStoreAsync(
+        string relative, CancellationToken ct = default)
+        => StateStore(relative).DropAsync(ct);
+
+    // ---- Schemas -------------------------------------------------------------
+
+    /// <summary><c>SET SCHEMA ON DOMAIN &lt;name&gt;</c> — this Domain's
+    /// inherited default.</summary>
+    public Task<ControlExecution> SetSchemaAsync(FeedSchema schema, CancellationToken ct = default)
+        => _client.SetDomainSchemaAsync(Name, schema, ct);
+
+    /// <summary><c>DROP SCHEMA ON DOMAIN &lt;name&gt;</c>.</summary>
+    public Task<ControlExecution> ClearSchemaAsync(CancellationToken ct = default)
+        => _client.ClearDomainSchemaAsync(Name, ct);
+
+    /// <summary><c>SET SCHEMA ON FEED &lt;feed&gt;</c> — overrides the
+    /// Domain default for the named sides.</summary>
+    public Task<ControlExecution> SetFeedSchemaAsync(
+        string relative, FeedSchema schema, CancellationToken ct = default)
+        => _client.SetFeedSchemaAsync(Resolve(relative), schema, ct);
+
+    /// <summary><c>DROP SCHEMA ON FEED &lt;feed&gt;</c> — the Feed reverts
+    /// to Domain inheritance.</summary>
+    public Task<ControlExecution> ClearFeedSchemaAsync(
+        string relative, CancellationToken ct = default)
+        => _client.ClearFeedSchemaAsync(Resolve(relative), ct);
+
+    // ---- Indexes ---------------------------------------------------------------
+
+    /// <summary>Query the replicated Index <paramref name="relative"/>
+    /// inside this Domain by predicate — exact, prefix, or range over
+    /// typed values. <paramref name="strict"/> waits for the committed
+    /// target rather than answering stale.</summary>
+    public Task<IndexPage> QueryIndexAsync(
+        string relative,
+        IndexPredicate predicate,
+        int? limit = null,
+        bool strict = false,
+        CancellationToken ct = default)
+        => _client.QueryIndexAsync(Resolve(relative), predicate, limit, strict, ct);
 
     internal string Resolve(string relative)
     {
@@ -450,9 +743,9 @@ public sealed class ReaderBuilder<TKey, TValue>
         => _feed.ReaderAsync(RequireId(), _maxPageSize, _start, ct);
 
     private string RequireId()
-        => _readerId ?? throw new InvalidOperationException(
+        => Domain.Resolve(_readerId ?? throw new InvalidOperationException(
             "ReaderId(...) is required — the durable consume identity" +
-            " (the Kafka groupId analogue)");
+            " (the Kafka groupId analogue)"));
 }
 
 /// <summary>
@@ -495,5 +788,5 @@ public sealed class WriterBuilder<TKey, TValue>
         => _feed.WriterAsync(RequireId(), ct);
 
     private string RequireId()
-        => _writerId ?? throw new InvalidOperationException("WriterId(...) is required");
+        => Domain.Resolve(_writerId ?? throw new InvalidOperationException("WriterId(...) is required"));
 }

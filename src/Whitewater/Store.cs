@@ -69,6 +69,12 @@ public sealed class Store<TKey, TValue>
     /// <summary>The store's name.</summary>
     public string Name => _store.Name;
 
+    /// <summary>The absolute store name travels as a cross-Domain
+    /// reference — a Pipe in another Domain can write into this
+    /// store.</summary>
+    public static implicit operator Scoped(Store<TKey, TValue> store)
+        => Scoped.Absolute((store ?? throw new ArgumentNullException(nameof(store))).Name);
+
     /// <summary>The underlying byte-level StateStore.</summary>
     public StateStore Raw => _store;
 

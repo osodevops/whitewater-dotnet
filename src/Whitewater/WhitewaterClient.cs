@@ -11,7 +11,7 @@ public sealed class WhitewaterClient
 {
     private readonly Transport _transport;
 
-    public FeedClient Feeds { get; }
+    internal FeedClient Feeds { get; }
 
     public WhitewaterClient(string apiKey, IReadOnlyList<Uri> endpoints, TimeSpan? timeout = null)
     {
@@ -76,10 +76,10 @@ public sealed class WhitewaterClient
 
     /// <summary>Bind a declared Pipe for lifecycle operations:
     /// Describe/Pause/Resume/Drop.</summary>
-    public Pipe Pipe(string name) => new(this, name);
+    internal Pipe Pipe(string name) => new(this, name);
 
     /// <summary><c>SHOW PIPES</c>: the catalog of declared Pipes.</summary>
-    public async Task<IReadOnlyList<PipeInfo>> PipesAsync(CancellationToken ct = default)
+    internal async Task<IReadOnlyList<PipeInfo>> PipesAsync(CancellationToken ct = default)
     {
         var execution = await CommandsAsync(
             new JsonObject[] { new() { ["command"] = "show", ["kind"] = "pipes" } },
@@ -90,7 +90,7 @@ public sealed class WhitewaterClient
 
     /// <summary><c>DEFINE PIPE &lt;name&gt; FROM &lt;subscription&gt; TO FEED
     /// &lt;outputFeed&gt;</c> — the copy Pipe.</summary>
-    public Task<ControlExecution> DefineForwardPipeAsync(
+    internal Task<ControlExecution> DefineForwardPipeAsync(
         string name, string subscription, string outputFeed, CancellationToken ct = default)
         => CommandsAsync(
             new JsonObject[]
@@ -109,7 +109,7 @@ public sealed class WhitewaterClient
     /// enrichment; <paramref name="quarantineFeed"/> resolves the
     /// miss-quarantine target when the operation's miss disposition is
     /// <see cref="EnrichMiss.Quarantine"/>.</summary>
-    public async Task<ControlExecution> DefineEnrichPipeAsync(
+    internal async Task<ControlExecution> DefineEnrichPipeAsync(
         string name,
         string subscription,
         string outputFeed,
@@ -145,7 +145,7 @@ public sealed class WhitewaterClient
     /// rolling-window aggregation; <paramref name="emitFeed"/> optionally
     /// emits closed panes and requires the operation declare a lateness
     /// bound (<c>max_late_ns</c> or <c>watermark_ns</c>).</summary>
-    public async Task<ControlExecution> DefineWindowPipeAsync(
+    internal async Task<ControlExecution> DefineWindowPipeAsync(
         string name,
         string subscription,
         string outputStore,
@@ -185,7 +185,7 @@ public sealed class WhitewaterClient
 
     /// <summary><c>SET SCHEMA ON FEED &lt;feed&gt;</c> — overrides the
     /// named sides.</summary>
-    public Task<ControlExecution> SetFeedSchemaAsync(
+    internal Task<ControlExecution> SetFeedSchemaAsync(
         string feed, FeedSchema schema, CancellationToken ct = default)
         => SetSchemaAsync("feed", feed, schema, ct);
 
@@ -196,7 +196,7 @@ public sealed class WhitewaterClient
 
     /// <summary><c>DROP SCHEMA ON FEED &lt;feed&gt;</c> — the Feed
     /// reverts to Domain inheritance.</summary>
-    public Task<ControlExecution> ClearFeedSchemaAsync(
+    internal Task<ControlExecution> ClearFeedSchemaAsync(
         string feed, CancellationToken ct = default)
         => ClearSchemaAsync("feed", feed, ct);
 
@@ -231,7 +231,7 @@ public sealed class WhitewaterClient
     /// <summary>Query a replicated Index by predicate — exact, prefix, or
     /// range over typed values. <paramref name="strict"/> waits for the
     /// committed target rather than answering stale.</summary>
-    public async Task<IndexPage> QueryIndexAsync(
+    internal async Task<IndexPage> QueryIndexAsync(
         string index,
         IndexPredicate predicate,
         int? limit = null,
@@ -298,22 +298,33 @@ public sealed class WhitewaterClient
     // validated before interpolation, so a bad value fails locally rather
     // than reaching the Control Plane.
 
-    /// <summary><c>CREATE DOMAIN &lt;name&gt;</c></summary>
-    public Task<ControlExecution> CreateDomainAsync(string name, CancellationToken ct = default)
-        => WclAsync("CREATE DOMAIN " + Dotted(name), ct);
+    /// <summary><c>CREATE DOMAIN &lt;name&gt;</c> — returns the declared
+    /// Domain's handle so the domain → feed → reader/writer navigation
+    /// starts immediately:
+    /// <code>
+    /// var pipes = await client.CreateDomainAsync("pipes");
+    /// await pipes.CreateFeedAsync("orders");
+    /// </code>
+    /// </summary>
+    public async Task<Domain> CreateDomainAsync(
+        string name, CancellationToken ct = default)
+    {
+        await WclAsync("CREATE DOMAIN " + Dotted(name), ct).ConfigureAwait(false);
+        return Domain(name);
+    }
 
     /// <summary><c>CREATE FEED &lt;dotted.name&gt;</c></summary>
-    public Task<ControlExecution> CreateFeedAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> CreateFeedAsync(string name, CancellationToken ct = default)
         => WclAsync("CREATE FEED " + Dotted(name), ct);
 
     /// <summary><c>CREATE WRITER &lt;name&gt; TO &lt;feed&gt;</c></summary>
-    public Task<ControlExecution> CreateWriterAsync(
+    internal Task<ControlExecution> CreateWriterAsync(
         string name, string feed, CancellationToken ct = default)
         => WclAsync($"CREATE WRITER {Resource(name)} TO {Dotted(feed)}", ct);
 
     /// <summary><c>CREATE READER &lt;name&gt; FROM &lt;feed&gt; [START AT &lt;start&gt;]</c>
     /// (default BEGINNING).</summary>
-    public Task<ControlExecution> CreateReaderAsync(
+    internal Task<ControlExecution> CreateReaderAsync(
         string name, string feed, ReaderStart? start = null, CancellationToken ct = default)
         => CreateFromAsync("READER", name, feed, start ?? ReaderStart.Beginning(), ct);
 
@@ -345,7 +356,7 @@ public sealed class WhitewaterClient
     /// .OpenAsync()</c>. A <see cref="Feed{TKey,TValue}"/> bound to
     /// another Domain is refused locally.
     /// </summary>
-    public ReaderBuilder<TKey, TValue> CreateReader<TKey, TValue>(
+    internal ReaderBuilder<TKey, TValue> CreateReader<TKey, TValue>(
         Domain domain, Feed<TKey, TValue> feed)
     {
         ArgumentNullException.ThrowIfNull(feed);
@@ -355,7 +366,7 @@ public sealed class WhitewaterClient
 
     /// <summary><see cref="CreateReader{TKey,TValue}(Domain, Feed{TKey,TValue})"/>
     /// by relative Feed name — codecs default to UTF-8 keys/byte payloads.</summary>
-    public ReaderBuilder<string, string> CreateReader(Domain domain, string feed)
+    internal ReaderBuilder<string, string> CreateReader(Domain domain, string feed)
         => CreateReader(domain, domain.Feed(feed));
 
     /// <summary>
@@ -363,7 +374,7 @@ public sealed class WhitewaterClient
     /// <paramref name="domain"/> + <paramref name="feed"/> —
     /// <c>client.CreateWriter(shop, orders).WriterId("ingest").OpenAsync()</c>.
     /// </summary>
-    public WriterBuilder<TKey, TValue> CreateWriter<TKey, TValue>(
+    internal WriterBuilder<TKey, TValue> CreateWriter<TKey, TValue>(
         Domain domain, Feed<TKey, TValue> feed)
     {
         ArgumentNullException.ThrowIfNull(feed);
@@ -373,10 +384,10 @@ public sealed class WhitewaterClient
 
     /// <summary><see cref="CreateWriter{TKey,TValue}(Domain, Feed{TKey,TValue})"/>
     /// by relative Feed name — codecs default to UTF-8 keys/byte payloads.</summary>
-    public WriterBuilder<string, string> CreateWriter(Domain domain, string feed)
+    internal WriterBuilder<string, string> CreateWriter(Domain domain, string feed)
         => CreateWriter(domain, domain.Feed(feed));
 
-    private static void RequireOwnedFeed(Domain domain, string? feed)
+    internal static void RequireOwnedFeed(Domain domain, string? feed)
     {
         ArgumentNullException.ThrowIfNull(domain);
         ArgumentNullException.ThrowIfNull(feed);
@@ -389,7 +400,7 @@ public sealed class WhitewaterClient
 
     /// <summary><c>CREATE SUBSCRIPTION &lt;name&gt; FROM &lt;feed&gt;
     /// [START AT &lt;start&gt;]</c>.</summary>
-    public Task<ControlExecution> CreateSubscriptionAsync(
+    internal Task<ControlExecution> CreateSubscriptionAsync(
         string name, string feed, ReaderStart? start = null, CancellationToken ct = default)
         => CreateFromAsync("SUBSCRIPTION", name, feed, start ?? ReaderStart.Beginning(), ct);
 
@@ -403,13 +414,13 @@ public sealed class WhitewaterClient
 
     /// <summary><c>OPEN WRITER SESSION &lt;name&gt;</c>; the returned epoch feeds
     /// <see cref="Writer"/>.</summary>
-    public Task<ControlExecution> OpenWriterSessionAsync(
+    internal Task<ControlExecution> OpenWriterSessionAsync(
         string writer, CancellationToken ct = default)
         => WclAsync("OPEN WRITER SESSION " + Resource(writer), ct);
 
     /// <summary><c>SEEK READER &lt;name&gt; TO &lt;start&gt;</c> — repositions a
     /// durable Reader.</summary>
-    public Task<ControlExecution> SeekReaderAsync(
+    internal Task<ControlExecution> SeekReaderAsync(
         string reader, ReaderStart start, CancellationToken ct = default)
         => WclAsync($"SEEK READER {Resource(reader)} TO {start.Wcl}", ct);
 
@@ -418,19 +429,19 @@ public sealed class WhitewaterClient
         => DescribeAsync("DOMAIN", name, true, ct);
 
     /// <summary><c>DESCRIBE FEED &lt;dotted.name&gt;</c></summary>
-    public Task<ControlExecution> DescribeFeedAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DescribeFeedAsync(string name, CancellationToken ct = default)
         => DescribeAsync("FEED", name, true, ct);
 
     /// <summary><c>DESCRIBE WRITER &lt;name&gt;</c></summary>
-    public Task<ControlExecution> DescribeWriterAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DescribeWriterAsync(string name, CancellationToken ct = default)
         => DescribeAsync("WRITER", name, false, ct);
 
     /// <summary><c>DESCRIBE READER &lt;name&gt;</c></summary>
-    public Task<ControlExecution> DescribeReaderAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DescribeReaderAsync(string name, CancellationToken ct = default)
         => DescribeAsync("READER", name, false, ct);
 
     /// <summary><c>DESCRIBE SUBSCRIPTION &lt;name&gt;</c></summary>
-    public Task<ControlExecution> DescribeSubscriptionAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DescribeSubscriptionAsync(string name, CancellationToken ct = default)
         => DescribeAsync("SUBSCRIPTION", name, false, ct);
 
     /// <summary><c>DESCRIBE ROLE &lt;name&gt;</c></summary>
@@ -443,22 +454,22 @@ public sealed class WhitewaterClient
         => RenameAsync("DOMAIN", current, renamed, true, ct);
 
     /// <summary><c>RENAME FEED &lt;current&gt; TO &lt;renamed&gt;</c></summary>
-    public Task<ControlExecution> RenameFeedAsync(
+    internal Task<ControlExecution> RenameFeedAsync(
         string current, string renamed, CancellationToken ct = default)
         => RenameAsync("FEED", current, renamed, true, ct);
 
     /// <summary><c>RENAME WRITER &lt;current&gt; TO &lt;renamed&gt;</c></summary>
-    public Task<ControlExecution> RenameWriterAsync(
+    internal Task<ControlExecution> RenameWriterAsync(
         string current, string renamed, CancellationToken ct = default)
         => RenameAsync("WRITER", current, renamed, false, ct);
 
     /// <summary><c>RENAME READER &lt;current&gt; TO &lt;renamed&gt;</c></summary>
-    public Task<ControlExecution> RenameReaderAsync(
+    internal Task<ControlExecution> RenameReaderAsync(
         string current, string renamed, CancellationToken ct = default)
         => RenameAsync("READER", current, renamed, false, ct);
 
     /// <summary><c>RENAME SUBSCRIPTION &lt;current&gt; TO &lt;renamed&gt;</c></summary>
-    public Task<ControlExecution> RenameSubscriptionAsync(
+    internal Task<ControlExecution> RenameSubscriptionAsync(
         string current, string renamed, CancellationToken ct = default)
         => RenameAsync("SUBSCRIPTION", current, renamed, false, ct);
 
@@ -472,19 +483,19 @@ public sealed class WhitewaterClient
         => DropAsync("DOMAIN", name, true, ct);
 
     /// <summary><c>DROP FEED &lt;dotted.name&gt;</c></summary>
-    public Task<ControlExecution> DropFeedAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DropFeedAsync(string name, CancellationToken ct = default)
         => DropAsync("FEED", name, true, ct);
 
     /// <summary><c>DROP WRITER &lt;name&gt;</c></summary>
-    public Task<ControlExecution> DropWriterAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DropWriterAsync(string name, CancellationToken ct = default)
         => DropAsync("WRITER", name, false, ct);
 
     /// <summary><c>DROP READER &lt;name&gt;</c></summary>
-    public Task<ControlExecution> DropReaderAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DropReaderAsync(string name, CancellationToken ct = default)
         => DropAsync("READER", name, false, ct);
 
     /// <summary><c>DROP SUBSCRIPTION &lt;name&gt;</c></summary>
-    public Task<ControlExecution> DropSubscriptionAsync(string name, CancellationToken ct = default)
+    internal Task<ControlExecution> DropSubscriptionAsync(string name, CancellationToken ct = default)
         => DropAsync("SUBSCRIPTION", name, false, ct);
 
     /// <summary><c>DROP ROLE &lt;name&gt;</c></summary>
@@ -496,19 +507,19 @@ public sealed class WhitewaterClient
         => WclAsync("SHOW DOMAINS", ct);
 
     /// <summary><c>SHOW FEEDS</c></summary>
-    public Task<ControlExecution> ListFeedsAsync(CancellationToken ct = default)
+    internal Task<ControlExecution> ListFeedsAsync(CancellationToken ct = default)
         => WclAsync("SHOW FEEDS", ct);
 
     /// <summary><c>SHOW WRITERS</c></summary>
-    public Task<ControlExecution> ListWritersAsync(CancellationToken ct = default)
+    internal Task<ControlExecution> ListWritersAsync(CancellationToken ct = default)
         => WclAsync("SHOW WRITERS", ct);
 
     /// <summary><c>SHOW READERS</c></summary>
-    public Task<ControlExecution> ListReadersAsync(CancellationToken ct = default)
+    internal Task<ControlExecution> ListReadersAsync(CancellationToken ct = default)
         => WclAsync("SHOW READERS", ct);
 
     /// <summary><c>SHOW SUBSCRIPTIONS</c></summary>
-    public Task<ControlExecution> ListSubscriptionsAsync(CancellationToken ct = default)
+    internal Task<ControlExecution> ListSubscriptionsAsync(CancellationToken ct = default)
         => WclAsync("SHOW SUBSCRIPTIONS", ct);
 
     /// <summary><c>SHOW ROLES</c></summary>
@@ -554,13 +565,13 @@ public sealed class WhitewaterClient
     /// share the same dotted grammar the server validates.</summary>
     private static string Resource(string name) => Dotted(name);
 
-    public WriterSessionClient Writer(string name, long sessionEpoch)
+    internal WriterSessionClient Writer(string name, long sessionEpoch)
         => new(_transport, name, sessionEpoch);
 
-    public ReaderSessionClient Reader(string name)
+    internal ReaderSessionClient Reader(string name)
         => new(_transport, name);
 
-    public SubscriptionMemberClient SubscriptionMember(string subscription)
+    internal SubscriptionMemberClient SubscriptionMember(string subscription)
         => new(_transport, subscription);
 
     /// <summary>
@@ -574,7 +585,7 @@ public sealed class WhitewaterClient
     /// <see cref="Subscription.DisposeAsync"/>; terminal errors reach
     /// <paramref name="onError"/> and <see cref="Subscription.Failure"/>.
     /// </summary>
-    public Subscription Subscribe(
+    internal Subscription Subscribe(
         string reader,
         string feed,
         ReaderStart start,
@@ -595,17 +606,17 @@ public sealed class WhitewaterClient
     /// the two-codec overload binds both explicitly — protobuf/msgpack/
     /// custom via <see cref="Codecs.Custom{T}"/>.
     /// </summary>
-    public Feed<string, TValue> Feed<TValue>(string name, ICodec<TValue> valueCodec)
+    internal Feed<string, TValue> Feed<TValue>(string name, ICodec<TValue> valueCodec)
         => new(this, DottedName(name), Codecs.Utf8, valueCodec);
 
     /// <inheritdoc cref="Feed{TValue}(string, ICodec{TValue})"/>
-    public Feed<TKey, TValue> Feed<TKey, TValue>(
+    internal Feed<TKey, TValue> Feed<TKey, TValue>(
         string name, ICodec<TKey> keyCodec, ICodec<TValue> valueCodec)
         => new(this, DottedName(name), keyCodec, valueCodec);
 
     /// <summary>The default binding — UTF-8 string keys and untouched
     /// payload bytes, the escape hatch to the wire.</summary>
-    public Feed<string, string> Feed(string name)
+    internal Feed<string, string> Feed(string name)
         => new(this, DottedName(name), Codecs.Utf8, Codecs.Utf8);
 
     /// <summary>
@@ -614,19 +625,19 @@ public sealed class WhitewaterClient
     /// <see cref="StateStore(string)"/> facade remains for raw access
     /// and declaration.
     /// </summary>
-    public Store<string, TValue> Store<TValue>(string name, ICodec<TValue> valueCodec)
+    internal Store<string, TValue> Store<TValue>(string name, ICodec<TValue> valueCodec)
         => Whitewater.Store<string, TValue>.Bind(
             Whitewater.StateStore.Bound(_transport, name), Codecs.Utf8, valueCodec);
 
     /// <inheritdoc cref="Store{TValue}(string, ICodec{TValue})"/>
-    public Store<TKey, TValue> Store<TKey, TValue>(
+    internal Store<TKey, TValue> Store<TKey, TValue>(
         string name, ICodec<TKey> keyCodec, ICodec<TValue> valueCodec)
         => Whitewater.Store<TKey, TValue>.Bind(
             Whitewater.StateStore.Bound(_transport, name), keyCodec, valueCodec);
 
     /// <summary>The default binding — UTF-8 keys and untouched payload
     /// bytes.</summary>
-    public Store<string, string> Store(string name)
+    internal Store<string, string> Store(string name)
         => Whitewater.Store<string, string>.Bind(
             Whitewater.StateStore.Bound(_transport, name), Codecs.Utf8, Codecs.Utf8);
 
@@ -634,10 +645,10 @@ public sealed class WhitewaterClient
     /// A thin facade over the node-side StateStore <paramref name="name"/> —
     /// rows live on the Nodes (RF3 + Fjall); this client holds no state.
     /// </summary>
-    public StateStore StateStore(string name) => Whitewater.StateStore.Bound(_transport, name);
+    internal StateStore StateStore(string name) => Whitewater.StateStore.Bound(_transport, name);
 
     /// <summary>Collection-level StateStore operations: declare, drop.</summary>
-    public StateStoresClient StateStores { get; }
+    internal StateStoresClient StateStores { get; }
 
     private const int SubscribeCapacity = 128;
 }
