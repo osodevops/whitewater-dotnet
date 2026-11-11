@@ -22,7 +22,24 @@ implementation details — cursors are opaque tokens, never parsed.
 - **Subscriptions** share durable acknowledged progress across
   cooperating members with lease fencing.
 
-## Usage
+## Clients
+
+```csharp
+var client = new WhitewaterClient(
+    apiKey: Environment.GetEnvironmentVariable("WHITEWATER_API_KEY")!,
+    endpoints: new[] {
+        new Uri("https://node1:7070"),
+        new Uri("https://node2:7070"),
+        new Uri("https://node3:7070"),
+    });
+```
+
+Everything a service needs hangs off the client — `CreateDomainAsync`,
+`GetDomainAsync` handles, `WclAsync` + typed commands, health and demand
+reports — and every Feed, Writer, Reader, Subscription, Member, Pipe,
+StateStore, and Index is reached **only** through a `Domain`. The typed
+path below binds codecs once; the wire-level escape hatches keep raw
+`byte[]` control.
 
 ### Typed feeds and stores — codecs do the serialization
 
@@ -87,7 +104,69 @@ Codecs.TextMetadata(m) // text Metadata map -> wire bytes
 `feed.View(kc, vc)` and `store.View(...)` rebind codecs without a wire
 call.
 
-### Typed Domains — navigate, don't concatenate
+### Server-side StateStores
+
+```csharp
+var accounts = await client.GetDomainAsync("accounts");
+var spec = StateStore.Named("employees")
+    .AddUniqueKey("passport").AddNonUniqueKey("department");   // up to 10 named keys
+var store = await accounts.DefineStateStoreAsync(spec);       // declares accounts.employees on the Nodes
+
+// named-key postings: a typed IStoreKeySet, a builder lambda, or a raw dictionary —
+await store.PutAsync("emp-1", payload, PassportKeySet.With("P123", "eng"));
+await store.PutAsync("emp-1", payload,
+    new Dictionary<string, object?> { ["passport"] = "P123", ["department"] = "eng" });
+var row = await store.GetAsync("emp-1");            // StoreRow | null + freshness
+var rows = await store.GetByAsync("passport", "P123");          // named key — a list
+await foreach (var r in store.IterateAsync()) Export(r);
+```
+
+The store lives on the Nodes — the SDK holds no local copy. See
+[docs/stores.md](docs/stores.md) for the full store guide and
+[docs/pipes.md](docs/pipes.md) for managed stream jobs
+(forward/enrich/window) built on subscriptions and stores.
+
+### Wire-level API
+
+The raw `byte[]` API stays available for full control:
+
+```csharp
+// Provision a Domain, Feed, Writer, and session — either typed
+// (each method builds its WCL statement for you). CreateDomainAsync
+// returns the Domain handle — every resource lives under it:
+var shop = await client.CreateDomainAsync("shop");
+await shop.CreateFeedAsync("orders");            // CREATE FEED shop.orders
+await shop.CreateWriterAsync("orders.writer", "orders");
+var setup = await shop.OpenWriterSessionAsync("orders.writer");
+var sessionEpoch = setup.Results[0].Data["session_epoch"]!.GetValue<long>();
+//
+// …or raw WCL when a script is clearer:
+//   await client.WclAsync("CREATE DOMAIN shop; CREATE FEED shop.orders; ...");
+
+// Idempotent append — retrying with the same request id is safe.
+var writer = shop.Writer("orders.writer", sessionEpoch);
+var appended = await writer.AppendAsync(
+    key: "order-42"u8.ToArray(),
+    payload: "created"u8.ToArray(),
+    requestId: Guid.NewGuid(),
+    eventTimeNs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L,
+    metadata: new Dictionary<string, byte[]> { ["source"] = "api"u8.ToArray() });
+
+// Independent durable reader — the name resolves inside the Domain.
+var reader = shop.Reader("orders.reader");
+var session = await reader.OpenAsync(capacity: 64);
+var page = await reader.FetchAsync(session);
+foreach (var record in page.Records)
+{
+    Process(record);
+}
+if (page.DeliveredCursor is { } frontier)
+{
+    await reader.AckAsync(session, frontier);
+}
+```
+
+## Typed Domains — navigate, don't concatenate
 
 A Domain owns every Feed it prefixes (`shop` owns `shop.orders`), so
 the friendliest surface navigates domain → feed → reader/writer
@@ -159,64 +238,7 @@ await shop.ClearFeedSchemaAsync("orders");   // reverts to inheritance
 assignments. Formats today: `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`,
 or `custom.<name>` — compatibility enforcement is still a no-op.
 
-### Wire-level API
-
-The raw `byte[]` API stays available for full control:
-
-```csharp
-// Provision a Domain, Feed, Writer, and session — either typed
-// (each method builds its WCL statement for you). CreateDomainAsync
-// returns the Domain handle — every resource lives under it:
-var shop = await client.CreateDomainAsync("shop");
-await shop.CreateFeedAsync("orders");            // CREATE FEED shop.orders
-await shop.CreateWriterAsync("orders.writer", "orders");
-var setup = await shop.OpenWriterSessionAsync("orders.writer");
-var sessionEpoch = setup.Results[0].Data["session_epoch"]!.GetValue<long>();
-//
-// …or raw WCL when a script is clearer:
-//   await client.WclAsync("CREATE DOMAIN shop; CREATE FEED shop.orders; ...");
-
-// Idempotent append — retrying with the same request id is safe.
-var writer = shop.Writer("orders.writer", sessionEpoch);
-var appended = await writer.AppendAsync(
-    key: "order-42"u8.ToArray(),
-    payload: "created"u8.ToArray(),
-    requestId: Guid.NewGuid(),
-    eventTimeNs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L,
-    metadata: new Dictionary<string, byte[]> { ["source"] = "api"u8.ToArray() });
-
-// Independent durable reader — the name resolves inside the Domain.
-var reader = shop.Reader("orders.reader");
-var session = await reader.OpenAsync(capacity: 64);
-var page = await reader.FetchAsync(session);
-foreach (var record in page.Records)
-{
-    Process(record);
-}
-if (page.DeliveredCursor is { } frontier)
-{
-    await reader.AckAsync(session, frontier);
-}
-```
-
-### Managed consume: `LoadAsync` + `Subscribe`
-
-```csharp
-// One-shot bulk read of committed history, delivered per page.
-var hr = await client.GetDomainAsync("hr");
-var loaded = await hr.Feed("employees").LoadAsync(
-    ReaderStart.Beginning(),
-    batch => { Export(batch); return Task.CompletedTask; });
-
-// ...or keep receiving: provisions the Reader, runs
-// Open -> [Fetch -> onRecords -> Ack] -> Close on a background task.
-await using var sub = hr.Subscribe("hr-view", "employees",
-    ReaderStart.Now(),
-    batch => { Export(batch); return Task.CompletedTask; },
-    error => Console.Error.WriteLine($"subscription ended: {error}"));
-```
-
-### Permanent consumer: `feed.Consumer()` — supervision inside
+## Permanent consumer: `feed.Consumer()` — supervision inside
 
 For the Kafka-style "consume forever" loop, `Consumer(reader)` wraps
 `Subscribe` with a supervisor — reconnects, retry backoff, session
@@ -257,27 +279,22 @@ await feed.Consumer("enricher")
 See [examples/EnrichUsers](examples/EnrichUsers/Program.cs) for the full
 enrichment service — primary/named-key store lookups, DLQ, counters.
 
-### Server-side StateStores
+### Managed consume: `LoadAsync` + `Subscribe`
 
 ```csharp
-var accounts = await client.GetDomainAsync("accounts");
-var spec = StateStore.Named("employees")
-    .AddUniqueKey("passport").AddNonUniqueKey("department");   // up to 10 named keys
-var store = await accounts.DefineStateStoreAsync(spec);       // declares accounts.employees on the Nodes
+// One-shot bulk read of committed history, delivered per page.
+var hr = await client.GetDomainAsync("hr");
+var loaded = await hr.Feed("employees").LoadAsync(
+    ReaderStart.Beginning(),
+    batch => { Export(batch); return Task.CompletedTask; });
 
-// named-key postings: a typed IStoreKeySet, a builder lambda, or a raw dictionary —
-await store.PutAsync("emp-1", payload, PassportKeySet.With("P123", "eng"));
-await store.PutAsync("emp-1", payload,
-    new Dictionary<string, object?> { ["passport"] = "P123", ["department"] = "eng" });
-var row = await store.GetAsync("emp-1");            // StoreRow | null + freshness
-var rows = await store.GetByAsync("passport", "P123");          // named key — a list
-await foreach (var r in store.IterateAsync()) Export(r);
+// ...or keep receiving: provisions the Reader, runs
+// Open -> [Fetch -> onRecords -> Ack] -> Close on a background task.
+await using var sub = hr.Subscribe("hr-view", "employees",
+    ReaderStart.Now(),
+    batch => { Export(batch); return Task.CompletedTask; },
+    error => Console.Error.WriteLine($"subscription ended: {error}"));
 ```
-
-The store lives on the Nodes — the SDK holds no local copy. See
-[docs/stores.md](docs/stores.md) for the full store guide and
-[docs/pipes.md](docs/pipes.md) for managed stream jobs
-(forward/enrich/window) built on subscriptions and stores.
 
 ### Error handling
 
@@ -290,7 +307,7 @@ catch (WhitewaterException.Conflict)       { /* fencing/conflict; inspect Code *
 catch (WhitewaterException.Refused)        { /* request rejected; fix and retry */ }
 ```
 
-### Pipes, indexes, and operations
+## Pipes, indexes, and operations
 
 Managed Pipes and replicated Indexes share the same topology-free model
 — names, never partitions or Nodes:
@@ -384,6 +401,12 @@ This SDK implements the versioned wire contract in
 decimal-string signed 64-bit nanoseconds, base64 binary fields, opaque
 cursors, UUID request ids, and the shared structured error codes.
 
+## Development
+
+```powershell
+dotnet build Whitewater.sln
+dotnet test Whitewater.sln   # unit tests; conformance skips without env vars
+```
 ## Unit-test doubles
 
 `Whitewater.Testing.FakeRiverbed` serves the wire contract over a loopback
@@ -409,9 +432,3 @@ $env:FINNSTREAM_ADMIN_API_KEY = "whitewater-local-development-admin-key"
 dotnet test tests/Whitewater.Tests --filter "FullyQualifiedName~ConformanceRunner"
 ```
 
-## Development
-
-```powershell
-dotnet build Whitewater.sln
-dotnet test Whitewater.sln   # unit tests; conformance skips without env vars
-```
