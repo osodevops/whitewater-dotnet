@@ -48,6 +48,14 @@ public class ConformanceRunner
 
     private const int TransientAttempts = 120;
     private static readonly TimeSpan TransientInterval = TimeSpan.FromMilliseconds(500);
+    // Wall-clock bound on the transient budget: 120 attempts was meant as a
+    // ~one-minute window, but an unavailable endpoint can burn a whole
+    // transport timeout per attempt — cap elapsed time so a dead Riverbed
+    // fails instead of grinding for hours.
+    private static readonly TimeSpan TransientBudget = TimeSpan.FromSeconds(120);
+    // The chaos driver's own internal waits are bounded to a few minutes;
+    // give it headroom but never let a wedged hook stall the gate.
+    private static readonly TimeSpan ChaosTimeout = TimeSpan.FromMinutes(7);
 
     /// <summary>The shared op vocabulary onto the wire surface.</summary>
     private static readonly Dictionary<string, (string Method, string Path)> WireEndpoints = new()
@@ -552,9 +560,19 @@ public class ConformanceRunner
             start.ArgumentList.Add(shell.Item1);
             start.ArgumentList.Add($"{_chaosCmd} {action}");
             using var process = Process.Start(start)!;
-            var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit();
+            // Async reads drain the pipe continuously so a chatty driver
+            // cannot fill the buffer and block itself before the bounded
+            // WaitForExit below even runs.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(ChaosTimeout))
+            {
+                process.Kill(entireProcessTree: true);
+                throw new InvalidOperationException(
+                    $"chaos hook timed out after {ChaosTimeout.TotalMinutes:0}m: {op}");
+            }
+            var stdout = stdoutTask.GetAwaiter().GetResult();
+            var stderr = stderrTask.GetAwaiter().GetResult();
             if (process.ExitCode != 0)
             {
                 throw new InvalidOperationException(
@@ -816,6 +834,7 @@ public class ConformanceRunner
 
                 var attempt = 0;
                 var transient = 0;
+                var transientDeadline = DateTime.UtcNow + TransientBudget;
                 int status;
                 JsonNode? body;
                 while (true)
@@ -827,7 +846,7 @@ public class ConformanceRunner
                     }
                     catch (TransportException)
                     {
-                        if (transient < TransientAttempts)
+                        if (transient < TransientAttempts && DateTime.UtcNow < transientDeadline)
                         {
                             transient += 1;
                             await Task.Delay(TransientInterval);
@@ -847,7 +866,7 @@ public class ConformanceRunner
                         throw new InvalidOperationException(
                             $"{name}: step {index} ({op}): {error.Message}", error);
                     }
-                    if (status >= 500 && transient < TransientAttempts)
+                    if (status >= 500 && transient < TransientAttempts && DateTime.UtcNow < transientDeadline)
                     {
                         transient += 1;
                         await Task.Delay(TransientInterval);
