@@ -88,6 +88,55 @@ public sealed class Store<TKey, TValue>
     /// through the bound codecs. <paramref name="named"/> maps declared
     /// named keys to typed scalar values; a stable
     /// <paramref name="mutationId"/> makes retries idempotent.</summary>
+    /// <summary>Bind the default secondary-key name used by the single-string <c>PutAsync</c> overload.</summary>
+    public Store<TKey, TValue> WithDefaultKey(string defaultKeyName)
+    {
+        _store.WithDefaultKey(defaultKeyName);
+        return this;
+    }
+
+    /// <summary>Bind a typed <typeparamref name="TKeySet"/> onto this store so <c>store.PutAsync(key, val, k =&gt; ...)</c> infers <typeparamref name="TKeySet"/>.</summary>
+    public Store<TKey, TValue, TKeySet> WithKeySet<TKeySet>() where TKeySet : IStoreKeySet, new()
+        => new(this);
+
+    /// <summary>Insert or replace one row with a typed <see cref="IStoreKeySet"/>.</summary>
+    public Task<MutationResult> PutAsync(
+        TKey key,
+        TValue value,
+        IStoreKeySet keys,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(key, value, keys?.ToDictionary(), mutationId, ct);
+
+    /// <summary>Insert or replace one row with an inline <see cref="StoreKeySet"/> builder.</summary>
+    public Task<MutationResult> PutAsync(
+        TKey key,
+        TValue value,
+        Action<StoreKeySet> keyBuilder,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(key, value, StoreKeySet.Of(keyBuilder).ToDictionary(), mutationId, ct);
+
+    /// <summary>Insert or replace one row with an inline typed <typeparamref name="TKeySet"/> builder.</summary>
+    public Task<MutationResult> PutAsync<TKeySet>(
+        TKey key,
+        TValue value,
+        Action<TKeySet> keyBuilder,
+        Guid? mutationId = null,
+        CancellationToken ct = default) where TKeySet : IStoreKeySet, new()
+        => PutAsync(key, value, StoreKeySet.Of(keyBuilder).ToDictionary(), mutationId, ct);
+
+    /// <summary>Single-string secondary-key fallback: maps <paramref name="singleSecondaryKey"/> to the store's first declared named key (or <see cref="WithDefaultKey"/>).</summary>
+    public Task<MutationResult> PutAsync(
+        TKey key,
+        TValue value,
+        string singleSecondaryKey,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => _store.PutAsync(
+            _keyCodec.Encode(key), _valueCodec.Encode(value),
+            singleSecondaryKey, mutationId, ct);
+
     public Task<MutationResult> PutAsync(
         TKey key,
         TValue value,
@@ -232,4 +281,82 @@ public sealed class Store<TKey, TValue>
         }
         return decoded;
     }
+}
+
+/// <summary>
+/// A <see cref="Store{TKey,TValue}"/> bound to a concrete <typeparamref name="TKeySet"/>
+/// so <c>await store.PutAsync(key, value, k =&gt; k.WithPassport("P123").WithDepartment("eng"))</c>
+/// infers <typeparamref name="TKeySet"/> directly.
+/// </summary>
+public sealed class Store<TKey, TValue, TKeySet> where TKeySet : IStoreKeySet, new()
+{
+    private readonly Store<TKey, TValue> _store;
+
+    internal Store(Store<TKey, TValue> store) => _store = store;
+
+    public Store<TKey, TValue> Unwrap() => _store;
+    public string Name => _store.Name;
+    public StateStore Raw => _store.Raw;
+
+    public static implicit operator Scoped(Store<TKey, TValue, TKeySet> store)
+        => Scoped.Absolute((store ?? throw new ArgumentNullException(nameof(store))).Name);
+
+    public Task<MutationResult> PutAsync(
+        TKey key,
+        TValue value,
+        TKeySet keys,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => _store.PutAsync(key, value, keys, mutationId, ct);
+
+    public Task<MutationResult> PutAsync(
+        TKey key,
+        TValue value,
+        Action<TKeySet> keyBuilder,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => _store.PutAsync(key, value, StoreKeySet.Of(keyBuilder), mutationId, ct);
+
+    public Task<MutationResult> PutAsync(
+        TKey key,
+        TValue value,
+        string singleSecondaryKey,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => _store.PutAsync(key, value, singleSecondaryKey, mutationId, ct);
+
+    public Task<MutationResult> PutAsync(
+        TKey key,
+        TValue value,
+        IReadOnlyDictionary<string, object?>? named = null,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => _store.PutAsync(key, value, named, mutationId, ct);
+
+    public Task<Row<TKey, TValue>?> GetAsync(TKey key, bool strict = false, int? waitMs = null, CancellationToken ct = default)
+        => _store.GetAsync(key, strict, waitMs, ct);
+
+    public Task<RowsResult<TKey, TValue>> GetByAsync(string namedKey, object? value, int? limit = null, bool strict = false, int? waitMs = null, CancellationToken ct = default)
+        => _store.GetByAsync(namedKey, value, limit, strict, waitMs, ct);
+
+    public Task<TValue?> FindAsync(TKey key, bool strict = false, int? waitMs = null, CancellationToken ct = default)
+        => _store.FindAsync(key, strict, waitMs, ct);
+
+    public Task<TValue?> FindByAsync(string namedKey, object? value, bool strict = false, int? waitMs = null, CancellationToken ct = default)
+        => _store.FindByAsync(namedKey, value, strict, waitMs, ct);
+
+    public Task<TValue> GetOrDefaultAsync(TKey key, TValue fallback, CancellationToken ct = default)
+        => _store.GetOrDefaultAsync(key, fallback, ct);
+
+    public Task<MutationResult> DeleteAsync(TKey key, Guid? mutationId = null, CancellationToken ct = default)
+        => _store.DeleteAsync(key, mutationId, ct);
+
+    public IAsyncEnumerable<Row<TKey, TValue>> IterateAsync(int? limit = null, CancellationToken ct = default)
+        => _store.IterateAsync(limit, ct);
+
+    public Task<MutationResult> ClearAsync(Guid? mutationId = null, CancellationToken ct = default)
+        => _store.ClearAsync(mutationId, ct);
+
+    public Task<ControlExecution> DropAsync(CancellationToken ct = default)
+        => _store.DropAsync(ct);
 }

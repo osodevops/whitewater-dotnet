@@ -21,9 +21,49 @@ var same = accounts.StateStore("employees");
 are declared at creation; at most `StateStore.MaxNamedKeys` (10). Adding
 a key to an existing store has no effect server-side.
 
-## Writing
+## Writing & `AbstractStoreKeySet`
+
+Define a typed `AbstractStoreKeySet` subclass once for your store's secondary keys so every `PutAsync` is strongly typed, or use inline builders / dictionaries:
 
 ```csharp
+public sealed class PassportKeySet : AbstractStoreKeySet
+{
+    public string? Passport   { get => Get<string>("passport");   set => Put("passport", value); }
+    public string? Department { get => Get<string>("department"); set => Put("department", value); }
+
+    public PassportKeySet WithPassport(string v)   => Put<PassportKeySet>("passport", v);
+    public PassportKeySet WithDepartment(string v) => Put<PassportKeySet>("department", v);
+
+    public static PassportKeySet With(string passport, string department)
+        => new PassportKeySet().WithPassport(passport).WithDepartment(department);
+
+    public static PassportKeySet Of(Action<PassportKeySet> builder)
+    {
+        var ks = new PassportKeySet();
+        builder(ks);
+        return ks;
+    }
+}
+
+var profiles = accounts.Store("employees", Codecs.Json<Profile>());
+
+// 1A. Static factory one-liner:
+await profiles.PutAsync("emp-1", profile, PassportKeySet.With("P123", "eng"));
+
+// 1B. C# object initializer:
+await profiles.PutAsync("emp-1", profile, new PassportKeySet { Passport = "P123", Department = "eng" });
+
+// 2A. Lambda on the KeySet class:
+await profiles.PutAsync("emp-1", profile, PassportKeySet.Of(k => k.WithPassport("P123").WithDepartment("eng")));
+
+// 2B. Bind the KeySet class onto the store so `k` is typed automatically:
+var keyed = profiles.WithKeySet<PassportKeySet>();
+await keyed.PutAsync("emp-1", profile, k => k.WithPassport("P123").WithDepartment("eng"));
+
+// 3. Single default string fallback (maps to the store's first declared key):
+await profiles.PutAsync("emp-1", profile, profile.Passport);
+
+// Raw dictionary is still supported for dynamic keys:
 await store.PutAsync(Utf8("user-1"), Utf8("profile-1"),
     new Dictionary<string, object?>
     {

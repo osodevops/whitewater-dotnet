@@ -33,8 +33,20 @@ public sealed class StateStore
     /// <summary>Named secondary keys per store; matches the server declaration budget.</summary>
     public const int MaxNamedKeys = StateStoreLimits.MaxNamedKeys;
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> DeclaredDefaultKeys =
+        new(StringComparer.Ordinal);
+
+    internal static void RegisterDefaultKey(string storeName, string defaultKey)
+    {
+        if (!string.IsNullOrWhiteSpace(storeName) && !string.IsNullOrWhiteSpace(defaultKey))
+        {
+            DeclaredDefaultKeys[WhitewaterClient.DottedName(storeName)] = defaultKey;
+        }
+    }
+
     private readonly List<NamedKey> _declaredKeys = new();
     private Transport? _transport;
+    private string? _defaultKey;
 
     private StateStore(Transport? transport, string name)
     {
@@ -102,6 +114,56 @@ public sealed class StateStore
     /// postings). <paramref name="mutationId"/> is the caller-owned
     /// idempotency identity; null generates one.
     /// </summary>
+    /// <summary>Bind the default secondary-key name used by the single-string <c>PutAsync</c> overload.</summary>
+    public StateStore WithDefaultKey(string defaultKeyName)
+    {
+        if (string.IsNullOrWhiteSpace(defaultKeyName))
+        {
+            throw new ArgumentException("defaultKeyName must not be blank", nameof(defaultKeyName));
+        }
+        _defaultKey = defaultKeyName;
+        return this;
+    }
+
+    internal string ResolveDefaultKeyName()
+        => _defaultKey
+           ?? (_declaredKeys.Count > 0 ? _declaredKeys[0].Name : null)
+           ?? (DeclaredDefaultKeys.TryGetValue(Name, out var registered) ? registered : "default");
+
+    /// <summary>Insert or replace one row with a typed <see cref="IStoreKeySet"/>.</summary>
+    public Task<MutationResult> PutAsync(
+        byte[] key,
+        byte[] payload,
+        IStoreKeySet keys,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(key, payload, keys?.ToDictionary(), mutationId, ct);
+
+    /// <summary>Insert or replace one row with an inline <see cref="StoreKeySet"/> builder.</summary>
+    public Task<MutationResult> PutAsync(
+        byte[] key,
+        byte[] payload,
+        Action<StoreKeySet> keyBuilder,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(key, payload, StoreKeySet.Of(keyBuilder).ToDictionary(), mutationId, ct);
+
+    /// <summary>Single-string secondary-key fallback: maps <paramref name="singleSecondaryKey"/> to the store's first declared named key (or <see cref="WithDefaultKey"/>).</summary>
+    public Task<MutationResult> PutAsync(
+        byte[] key,
+        byte[] payload,
+        string singleSecondaryKey,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(
+            key,
+            payload,
+            singleSecondaryKey is null
+                ? null
+                : new Dictionary<string, object?> { [ResolveDefaultKeyName()] = singleSecondaryKey },
+            mutationId,
+            ct);
+
     public async Task<MutationResult> PutAsync(
         byte[] key,
         byte[] payload,

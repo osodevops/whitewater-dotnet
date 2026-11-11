@@ -1684,7 +1684,7 @@ public sealed class FakeRiverbed : IDisposable, IAsyncDisposable
                 {
                     ["name"] = name,
                     ["subscription_id"] = s.Id.ToString(),
-                    ["space_id"] = SpaceIdOf(s.Feed),
+                    ["space_id"] = SpaceIdOf(name),
                     ["feed"] = s.Feed,
                     ["start"] = new JsonObject { ["kind"] = s.StartKind },
                     ["stage"] = "declared",

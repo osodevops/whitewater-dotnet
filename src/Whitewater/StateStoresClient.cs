@@ -71,6 +71,10 @@ public sealed class StateStoresClient
         };
         Wire.ControlExecution(await _transport
             .PostAsync("/v1/admin/commands", body, ct).ConfigureAwait(false));
+        if (spec.NamedKeys.Count > 0)
+        {
+            StateStore.RegisterDefaultKey(spec.Name, spec.NamedKeys[0].Name);
+        }
         return spec.Bind(_transport);
     }
 

@@ -85,6 +85,9 @@ public class TypedStoreTests : IDisposable
 
     private string Route(string path) => path switch
     {
+        "/v1/admin/commands" => """
+            {"request_id":"00000000-0000-7000-8000-000000000006","revision":9,"authority":"control_plane","warning":null,"results":[{"statement":"s","message":"ok","data":{}}]}
+            """,
         "/v1/state-stores/mutate" or "/v1/state-stores/clear" => MutateOk,
         "/v1/state-stores/lookup" => $$"""
             {"found": true,
@@ -195,5 +198,83 @@ public class TypedStoreTests : IDisposable
         Assert.Equal("Ada", row!.Value.Name);
         Assert.Same(bound, profiles.Raw);
         Assert.Equal("accounts.employees", profiles.Name);
+    }
+
+    private sealed class PassportKeySet : AbstractStoreKeySet
+    {
+        public string? Passport
+        {
+            get => Get<string>("passport");
+            set => Put("passport", value);
+        }
+
+        public string? Department
+        {
+            get => Get<string>("department");
+            set => Put("department", value);
+        }
+
+        public PassportKeySet WithPassport(string v) => Put<PassportKeySet>("passport", v);
+        public PassportKeySet WithDepartment(string v) => Put<PassportKeySet>("department", v);
+
+        public static PassportKeySet With(string passport, string department)
+            => new PassportKeySet().WithPassport(passport).WithDepartment(department);
+
+        public static PassportKeySet Of(Action<PassportKeySet> builder)
+        {
+            var ks = new PassportKeySet();
+            builder(ks);
+            return ks;
+        }
+    }
+
+    private static Dictionary<string, string?> NamedMap(JsonNode op)
+    {
+        var map = new Dictionary<string, string?>();
+        foreach (var entry in op["named"]!.AsArray())
+        {
+            map[entry!["name"]!.GetValue<string>()] = entry["values"]![0]!["value"]?.GetValue<string>();
+        }
+        return map;
+    }
+
+    [Fact]
+    public async Task StoreKeySetSupportsAllInlineStylesAndSingleStringFallback()
+    {
+        var accounts = _client.Domain("accounts");
+        var spec = StateStore.Named("employees").AddKey("passport", unique: true).AddKey("department");
+        await accounts.DefineStateStoreAsync(spec);
+        var profiles = accounts.Store("employees", Codecs.Json<Profile>());
+
+        // 1A: Static factory PassportKeySet.With("P123", "eng")
+        await profiles.PutAsync("emp-1", new Profile("emp-1", "Ada"), PassportKeySet.With("P123", "eng"));
+        var n1 = NamedMap(Bodies("/v1/state-stores/mutate").Last()["op"]!);
+        Assert.Equal("P123", n1["passport"]);
+        Assert.Equal("eng", n1["department"]);
+
+        // 1B: C# object initializer
+        await profiles.PutAsync("emp-2", new Profile("emp-2", "Bob"), new PassportKeySet { Passport = "P222", Department = "ops" });
+        var n2 = NamedMap(Bodies("/v1/state-stores/mutate").Last()["op"]!);
+        Assert.Equal("P222", n2["passport"]);
+        Assert.Equal("ops", n2["department"]);
+
+        // 2A: Lambda on KeySet class
+        await profiles.PutAsync("emp-3", new Profile("emp-3", "Cara"), PassportKeySet.Of(k => k.WithPassport("P333").WithDepartment("eng")));
+        var n3 = NamedMap(Bodies("/v1/state-stores/mutate").Last()["op"]!);
+        Assert.Equal("P333", n3["passport"]);
+        Assert.Equal("eng", n3["department"]);
+
+        // 2B: Store typed with KeySet class via WithKeySet
+        var keyed = profiles.WithKeySet<PassportKeySet>();
+        await keyed.PutAsync("emp-4", new Profile("emp-4", "Dan"), k => k.WithPassport("P444").WithDepartment("sales"));
+        var n4 = NamedMap(Bodies("/v1/state-stores/mutate").Last()["op"]!);
+        Assert.Equal("P444", n4["passport"]);
+        Assert.Equal("sales", n4["department"]);
+
+        // 3: Single default string fallback -> maps to first declared key ("passport")
+        await profiles.PutAsync("emp-5", new Profile("emp-5", "Eve"), "P555");
+        var n5 = NamedMap(Bodies("/v1/state-stores/mutate").Last()["op"]!);
+        Assert.Single(n5);
+        Assert.Equal("P555", n5["passport"]);
     }
 }
