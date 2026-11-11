@@ -9,15 +9,15 @@ projection, and every operation is an HTTP call with freshness evidence.
 var accounts = await client.GetDomainAsync("accounts");
 
 var spec = StateStore.Named("employees")
-    .AddKey("passport", unique: true)        // unique: one row per value
-    .AddKey("department");                   // non-unique: value -> many rows
+    .AddUniqueKey("passport")        // unique: one row per value
+    .AddNonUniqueKey("department");                   // non-unique: value -> many rows
 
 var store = await accounts.DefineStateStoreAsync(spec);   // manual store: accounts.employees
 // or a bound facade for an already-declared store:
 var same = accounts.StateStore("employees");
 ```
 
-`AddKey` records declaration intent used by `DefineAsync` — named keys
+`AddUniqueKey`/`AddNonUniqueKey` record declaration intent used by `DefineAsync` — named keys
 are declared at creation; at most `StateStore.MaxNamedKeys` (10). Adding
 a key to an existing store has no effect server-side.
 
@@ -150,8 +150,8 @@ an `Extractor`:
 
 ```csharp
 var spec = StateStore.Named("tagged")
-    .AddKey("passport", unique: true, extractor: Extractor.Metadata("pp"))
-    .AddKey("department", extractor: Extractor.Json("dept"));
+    .AddUniqueKey("passport", Extractor.Metadata("pp"))
+    .AddNonUniqueKey("department", Extractor.Json("dept"));
 var store = await accounts.DefineStateStoreAsync(spec, "events");
 ```
 
@@ -202,7 +202,7 @@ await client.CommandsAsync(new[]
 
 | Where | Type | Meaning / remedy |
 |---|---|---|
-| `AddKey` #11 / duplicate / blank | `InvalidOperationException` / `ArgumentException` | Declaration contract (10-key bound, distinct names). |
+| `AddUniqueKey`/`AddNonUniqueKey`/`AddKey` #11 / duplicate / blank | `InvalidOperationException` / `ArgumentException` | Declaration contract (10-key bound, distinct names). |
 | `DefineAsync` spec + `source` + bare named keys | `ArgumentException` | Feed-sourced keys need an `Extractor` — checked before the call. |
 | `DefineAsync` manual spec + `Extractor` | `ArgumentException` | Extractors apply to feed-sourced stores only. |
 | Data op on unbound spec | `InvalidOperationException` | `StateStore.Named` builds a spec; bind via `domain.DefineStateStoreAsync` or `domain.StateStore(name)`. |

@@ -32,7 +32,7 @@ await app.CreateFeedAsync("users.update.dlq");
 // Manual stores: profiles declares the "user_id" named secondary key the
 // fallback lookup queries; stats takes named values on each Put.
 await app.DefineStateStoreAsync(
-    StateStore.Named("users.profiles").AddKey("user_id", unique: true));
+    StateStore.Named("users.profiles").AddUniqueKey("user_id"));
 await app.DefineStateStoreAsync(StateStore.Named("users.stats"));
 
 var input = app.Feed("users.update.request", Codecs.Json<UpdateRequest>());

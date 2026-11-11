@@ -242,7 +242,7 @@ public class TypedStoreTests : IDisposable
     public async Task StoreKeySetSupportsAllInlineStylesAndSingleStringFallback()
     {
         var accounts = _client.Domain("accounts");
-        var spec = StateStore.Named("employees").AddKey("passport", unique: true).AddKey("department");
+        var spec = StateStore.Named("employees").AddUniqueKey("passport").AddNonUniqueKey("department");
         await accounts.DefineStateStoreAsync(spec);
         var profiles = accounts.Store("employees", Codecs.Json<Profile>());
 

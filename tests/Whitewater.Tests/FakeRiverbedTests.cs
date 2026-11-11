@@ -163,7 +163,7 @@ public class FakeRiverbedTests
         await using var riverbed = new FakeRiverbed();
         var client = new WhitewaterClient("test-key", riverbed.Endpoints);
 
-        var spec = StateStore.Named("accounts.employees").AddKey("department");
+        var spec = StateStore.Named("accounts.employees").AddNonUniqueKey("department");
         var store = await client.StateStores.DefineAsync(spec);
 
         var mutationId = Guid.NewGuid();

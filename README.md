@@ -262,9 +262,11 @@ enrichment service — primary/named-key store lookups, DLQ, counters.
 ```csharp
 var accounts = await client.GetDomainAsync("accounts");
 var spec = StateStore.Named("employees")
-    .AddKey("passport", unique: true).AddKey("department");   // up to 10 named keys
+    .AddUniqueKey("passport").AddNonUniqueKey("department");   // up to 10 named keys
 var store = await accounts.DefineStateStoreAsync(spec);       // declares accounts.employees on the Nodes
 
+// named-key postings: a typed IStoreKeySet, a builder lambda, or a raw dictionary —
+await store.PutAsync("emp-1"u8.ToArray(), payload, PassportKeySet.With("P123", "eng"));
 await store.PutAsync("emp-1"u8.ToArray(), payload,
     new Dictionary<string, object?> { ["passport"] = "P123", ["department"] = "eng" });
 var row = await store.GetAsync("emp-1"u8.ToArray());            // StoreRow | null + freshness

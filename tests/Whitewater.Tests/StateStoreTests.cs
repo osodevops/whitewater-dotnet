@@ -130,8 +130,8 @@ public class StateStoreTests : IDisposable
     public async Task DefineSendsTheTypedCommandWithDeclaredNamedKeys()
     {
         var spec = StateStore.Named("accounts.employees")
-            .AddKey("passport", unique: true)
-            .AddKey("department");
+            .AddUniqueKey("passport")
+            .AddNonUniqueKey("department");
         var store = await _client.StateStores.DefineAsync(spec);
 
         Assert.Equal("accounts.employees", store.Name);
@@ -150,26 +150,43 @@ public class StateStoreTests : IDisposable
         var spec = StateStore.Named("accounts.ten");
         for (var i = 0; i < 10; i++)
         {
-            spec.AddKey($"k{i}");
+            spec.AddNonUniqueKey($"k{i}");
         }
-        Assert.Throws<InvalidOperationException>(() => spec.AddKey("k10"));
+        Assert.Throws<InvalidOperationException>(() => spec.AddNonUniqueKey("k10"));
         Assert.Throws<ArgumentException>(
-            () => StateStore.Named("accounts.d").AddKey("a").AddKey("a"));
-        Assert.Throws<ArgumentException>(() => StateStore.Named("accounts.b").AddKey(" "));
+            () => StateStore.Named("accounts.d").AddNonUniqueKey("a").AddNonUniqueKey("a"));
+        Assert.Throws<ArgumentException>(() => StateStore.Named("accounts.b").AddNonUniqueKey(" "));
+    }
+
+    [Fact]
+    public void ExplicitUniqueAndNonUniqueHelpersSetTheFlag()
+    {
+        var spec = StateStore.Named("accounts.flags")
+            .AddUniqueKey("passport")
+            .AddNonUniqueKey("department");
+        Assert.True(spec.NamedKeys[0].Unique);
+        Assert.False(spec.NamedKeys[1].Unique);
+
+        var feedSourced = StateStore.Named("accounts.fs")
+            .AddUniqueKey("pp", Extractor.Metadata("pp"))
+            .AddNonUniqueKey("dept", Extractor.Json("dept"));
+        Assert.True(feedSourced.NamedKeys[0].Unique);
+        Assert.NotNull(feedSourced.NamedKeys[0].Extractor);
+        Assert.False(feedSourced.NamedKeys[1].Unique);
     }
 
     [Fact]
     public async Task DefineFeedSourcedNamedKeysNeedExtractors()
     {
         // A feed-sourced named key without a projection is a declaration bug.
-        var bare = StateStore.Named("accounts.src").AddKey("k");
+        var bare = StateStore.Named("accounts.src").AddNonUniqueKey("k");
         var refused = await Assert.ThrowsAsync<ArgumentException>(
             () => _client.StateStores.DefineAsync(bare, "accounts.events"));
         Assert.Contains("require an extractor", refused.Message);
 
         // An extractor on a manual store is refused — Puts carry the values.
         var manual = StateStore.Named("accounts.m")
-            .AddKey("k", extractor: Extractor.Metadata("pp"));
+            .AddNonUniqueKey("k", Extractor.Metadata("pp"));
         var refusedManual = await Assert.ThrowsAsync<ArgumentException>(
             () => _client.StateStores.DefineAsync(manual));
         Assert.Contains("manual stores", refusedManual.Message);
@@ -179,8 +196,8 @@ public class StateStoreTests : IDisposable
     public async Task DefineFeedSourcedEmitsExtractors()
     {
         var spec = StateStore.Named("accounts.tagged")
-            .AddKey("passport", unique: true, extractor: Extractor.Metadata("pp"))
-            .AddKey("department", extractor: Extractor.Json("dept"));
+            .AddUniqueKey("passport", Extractor.Metadata("pp"))
+            .AddNonUniqueKey("department", Extractor.Json("dept"));
         await _client.StateStores.DefineAsync(spec, "accounts.events");
 
         var sent = LastBody("/v1/admin/commands")["commands"]![0]!;

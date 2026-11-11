@@ -241,7 +241,7 @@ public class DomainSurfaceTests : IDisposable
         var app = _client.Domain("app");
 
         await app.DefineStateStoreAsync(
-            StateStore.Named("profiles").AddKey("user_id", unique: true));
+            StateStore.Named("profiles").AddUniqueKey("user_id"));
         var define = CommandAt(0);
         Assert.Equal("define_state_store", define["command"]!.GetValue<string>());
         Assert.Equal("app.profiles", define["name"]!.GetValue<string>());

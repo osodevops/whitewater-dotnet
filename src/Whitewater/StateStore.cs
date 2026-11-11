@@ -10,7 +10,7 @@ namespace Whitewater;
 ///
 /// <code>
 /// var spec = StateStore.Named("accounts.employees")
-///     .AddKey("passport", unique: true).AddKey("department");
+///     .AddUniqueKey("passport").AddNonUniqueKey("department");
 /// var store = await client.StateStores.DefineAsync(spec);
 ///
 /// await store.PutAsync("user-1"u8.ToArray(), "profile-1"u8.ToArray(),
@@ -93,6 +93,20 @@ public sealed class StateStore
         _declaredKeys.Add(new NamedKey(namedKey, unique, extractor));
         return this;
     }
+
+    /// <summary>
+    /// Declare a <b>unique</b> named key — one value resolves to at most
+    /// one primary row (<c>AddKey(namedKey, unique: true, extractor)</c>).
+    /// </summary>
+    public StateStore AddUniqueKey(string namedKey, Extractor? extractor = null)
+        => AddKey(namedKey, unique: true, extractor);
+
+    /// <summary>
+    /// Declare a <b>non-unique</b> named key — one value lists every
+    /// matching primary row (<c>AddKey(namedKey, unique: false, extractor)</c>).
+    /// </summary>
+    public StateStore AddNonUniqueKey(string namedKey, Extractor? extractor = null)
+        => AddKey(namedKey, unique: false, extractor);
 
     /// <summary>The declared named keys, in declaration order.</summary>
     public IReadOnlyList<NamedKey> NamedKeys => _declaredKeys.ToArray();

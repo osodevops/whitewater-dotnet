@@ -159,7 +159,7 @@ public sealed record NamedKey(string Name, bool Unique, Extractor? Extractor = n
 /// <summary>
 /// How a feed-sourced StateStore projects one committed source record
 /// to a named key's typed lookup values — declared on
-/// <c>AddKey(..., extractor)</c> and applied by server-side replay.
+/// <c>AddUniqueKey/AddNonUniqueKey(..., extractor)</c> and applied by server-side replay.
 /// Build with <see cref="RecordKey"/>, <see cref="Metadata(string)"/>,
 /// or <see cref="Json(string)"/>.
 /// </summary>

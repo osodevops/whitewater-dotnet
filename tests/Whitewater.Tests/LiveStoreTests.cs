@@ -42,8 +42,8 @@ public class LiveStoreTests
         await client.CreateDomainAsync(domain);
 
         var spec = StateStore.Named($"{domain}.employees")
-            .AddKey("passport", unique: true)
-            .AddKey("department");
+            .AddUniqueKey("passport")
+            .AddNonUniqueKey("department");
         var store = await client.StateStores.DefineAsync(spec);
         Assert.Equal($"{domain}.employees", store.Name);
 

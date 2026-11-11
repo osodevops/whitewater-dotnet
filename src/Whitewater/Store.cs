@@ -42,7 +42,7 @@ public sealed record RowPage<TKey, TValue>(
 /// Declare named keys on the raw spec first — Store binds codecs for
 /// data operations, not declaration:
 /// <code>
-/// var spec = StateStore.Named("accounts.employees").AddKey("passport", unique: true);
+/// var spec = StateStore.Named("accounts.employees").AddUniqueKey("passport");
 /// var bound = await client.StateStores.DefineAsync(spec);
 /// var profiles = Store.Bind(bound, Codecs.Utf8, Codecs.Json&lt;Profile&gt;());
 /// </code>

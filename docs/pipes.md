@@ -33,8 +33,8 @@ await ops.CreateSubscriptionAsync("orders.sub", "orders");
 
 ```csharp
 var spec = StateStore.Named("customers")
-    .AddKey("email", unique: true, extractor: Extractor.Json("$.email"))
-    .AddKey("tier", extractor: Extractor.Json("$.tier"));
+    .AddUniqueKey("email", Extractor.Json("$.email"))
+    .AddNonUniqueKey("tier", Extractor.Json("$.tier"));
 var store = await ops.DefineStateStoreAsync(spec);   // declares ops.customers
 ```
 
@@ -76,7 +76,7 @@ enumerable without composite row keys:
 
 ```csharp
 await ops.DefineStateStoreAsync(
-    StateStore.Named("order.counts").AddKey("key").AddKey("pane"));
+    StateStore.Named("order.counts").AddNonUniqueKey("key").AddNonUniqueKey("pane"));
 
 await ops.DefineWindowPipeAsync(
     "orders.hourly",

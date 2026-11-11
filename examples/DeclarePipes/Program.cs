@@ -38,9 +38,9 @@ await pipes.CreateSubscriptionAsync("audit", "orders");
 // A window Pipe's output store must declare non-unique 'key' and 'pane'
 // named keys so the view stays enumerable without composite row keys.
 await pipes.DefineStateStoreAsync(
-    StateStore.Named("customers").AddKey("by_id", unique: true));
+    StateStore.Named("customers").AddUniqueKey("by_id"));
 await pipes.DefineStateStoreAsync(
-    StateStore.Named("hourlyspend").AddKey("key").AddKey("pane"));
+    StateStore.Named("hourlyspend").AddNonUniqueKey("key").AddNonUniqueKey("pane"));
 
 // The copy Pipe: every delivered record lands on the output Feed
 // unchanged.
