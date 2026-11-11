@@ -225,7 +225,7 @@ public class StateStoreTests : IDisposable
     public async Task PutEncodesTypedNamedValuesAndDeletePostsTheOp()
     {
         var store = _client.StateStore("accounts.employees");
-        var put = await store.PutAsync("user-1"u8.ToArray(), "profile-1"u8.ToArray(),
+        var put = await store.PutAsync("user-1", "profile-1"u8.ToArray(),
             new Dictionary<string, object?>
             {
                 ["passport"] = "P111",
@@ -259,7 +259,7 @@ public class StateStoreTests : IDisposable
         Assert.Equal("AQI=", named["badge"]!["value_base64"]!.GetValue<string>());
         Assert.Equal("null", named["note"]!["kind"]!.GetValue<string>());
 
-        await store.DeleteAsync("user-1"u8.ToArray());
+        await store.DeleteAsync("user-1");
         var deleteOp = LastBody("/v1/state-stores/mutate")["op"]!;
         Assert.Equal("delete_row", deleteOp["kind"]!.GetValue<string>());
     }
@@ -277,7 +277,7 @@ public class StateStoreTests : IDisposable
     public async Task GetReturnsTheRowWithFreshnessEvidence()
     {
         var store = _client.StateStore("accounts.employees");
-        var row = await store.GetAsync("user-1"u8.ToArray(), strict: true, waitMs: 1000);
+        var row = await store.GetAsync("user-1", strict: true, wait: TimeSpan.FromMilliseconds(1000));
         Assert.NotNull(row);
         Assert.Equal("payload-1", Encoding.UTF8.GetString(row.Payload));
         Assert.Equal("41", row.AppliedCursor);

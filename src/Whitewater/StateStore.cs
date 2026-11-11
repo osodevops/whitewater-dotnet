@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using Whitewater.Internal;
 
@@ -13,9 +14,9 @@ namespace Whitewater;
 ///     .AddUniqueKey("passport").AddNonUniqueKey("department");
 /// var store = await client.StateStores.DefineAsync(spec);
 ///
-/// await store.PutAsync("user-1"u8.ToArray(), "profile-1"u8.ToArray(),
+/// await store.PutAsync("user-1", "profile-1"u8.ToArray(),
 ///     new Dictionary&lt;string, object?&gt; { ["passport"] = "P111", ["department"] = "eng" });
-/// var row = await store.GetAsync("user-1"u8.ToArray());          // StoreRow | null
+/// var row = await store.GetAsync("user-1");                      // StoreRow | null
 /// var rows = await store.GetByAsync("department", "eng");        // every match
 /// await foreach (var r in store.IterateAsync()) { }              // key-ordered pages
 /// await store.ClearAsync();
@@ -153,6 +154,42 @@ public sealed class StateStore
         CancellationToken ct = default)
         => PutAsync(key, payload, keys?.ToDictionary(), mutationId, ct);
 
+    /// <summary>UTF-8 <paramref name="key"/> convenience for <see cref="PutAsync(byte[], byte[], IStoreKeySet, Guid?, CancellationToken)"/>.</summary>
+    public Task<MutationResult> PutAsync(
+        string key,
+        byte[] payload,
+        IStoreKeySet keys,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(Encoding.UTF8.GetBytes(key), payload, keys, mutationId, ct);
+
+    /// <summary>UTF-8 <paramref name="key"/> convenience for <see cref="PutAsync(byte[], byte[], Action{StoreKeySet}, Guid?, CancellationToken)"/>.</summary>
+    public Task<MutationResult> PutAsync(
+        string key,
+        byte[] payload,
+        Action<StoreKeySet> keyBuilder,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(Encoding.UTF8.GetBytes(key), payload, keyBuilder, mutationId, ct);
+
+    /// <summary>UTF-8 <paramref name="key"/> convenience for the single-secondary-key <see cref="PutAsync(byte[], byte[], string, Guid?, CancellationToken)"/>.</summary>
+    public Task<MutationResult> PutAsync(
+        string key,
+        byte[] payload,
+        string singleSecondaryKey,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(Encoding.UTF8.GetBytes(key), payload, singleSecondaryKey, mutationId, ct);
+
+    /// <summary>UTF-8 <paramref name="key"/> convenience for <see cref="PutAsync(byte[], byte[], IReadOnlyDictionary{string, object?}, Guid?, CancellationToken)"/>.</summary>
+    public Task<MutationResult> PutAsync(
+        string key,
+        byte[] payload,
+        IReadOnlyDictionary<string, object?>? named = null,
+        Guid? mutationId = null,
+        CancellationToken ct = default)
+        => PutAsync(Encoding.UTF8.GetBytes(key), payload, named, mutationId, ct);
+
     /// <summary>Insert or replace one row with an inline <see cref="StoreKeySet"/> builder.</summary>
     public Task<MutationResult> PutAsync(
         byte[] key,
@@ -207,16 +244,24 @@ public sealed class StateStore
             .PostAsync("/v1/state-stores/mutate", body, ct).ConfigureAwait(false));
     }
 
+    /// <summary>UTF-8 <paramref name="key"/> convenience for <see cref="GetAsync(byte[], bool, TimeSpan?, CancellationToken)"/>.</summary>
+    public Task<StoreRow?> GetAsync(
+        string key,
+        bool strict = false,
+        TimeSpan? wait = null,
+        CancellationToken ct = default)
+        => GetAsync(Encoding.UTF8.GetBytes(key), strict, wait, ct);
+
     /// <summary>
     /// Primary-key read with freshness evidence on the returned row; null
     /// when absent. <paramref name="strict"/> bounded-waits
-    /// (<paramref name="waitMs"/>) for the serving replica to apply its
+    /// (<paramref name="wait"/>) for the serving replica to apply its
     /// committed frontier rather than answering stale.
     /// </summary>
     public async Task<StoreRow?> GetAsync(
         byte[] key,
         bool strict = false,
-        int? waitMs = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(key);
@@ -226,9 +271,9 @@ public sealed class StateStore
             ["key_base64"] = Convert.ToBase64String(key),
             ["strict"] = strict,
         };
-        if (waitMs.HasValue)
+        if (wait.HasValue)
         {
-            body["wait_ms"] = waitMs.Value;
+            body["wait_ms"] = (long)wait.Value.TotalMilliseconds;
         }
         var response = await BoundTransport
             .PostAsync("/v1/state-stores/lookup", body, ct).ConfigureAwait(false);
@@ -254,7 +299,7 @@ public sealed class StateStore
         object? value,
         int? limit = null,
         bool strict = false,
-        int? waitMs = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
         var values = new JsonArray();
@@ -280,13 +325,18 @@ public sealed class StateStore
         {
             body["limit"] = limit.Value;
         }
-        if (waitMs.HasValue)
+        if (wait.HasValue)
         {
-            body["wait_ms"] = waitMs.Value;
+            body["wait_ms"] = (long)wait.Value.TotalMilliseconds;
         }
         return Wire.StoreRowsOf(await BoundTransport
             .PostAsync("/v1/state-stores/get-by", body, ct).ConfigureAwait(false));
     }
+
+    /// <summary>UTF-8 <paramref name="key"/> convenience for <see cref="DeleteAsync(byte[], Guid?, CancellationToken)"/>.</summary>
+    public Task<MutationResult> DeleteAsync(
+        string key, Guid? mutationId = null, CancellationToken ct = default)
+        => DeleteAsync(Encoding.UTF8.GetBytes(key), mutationId, ct);
 
     /// <summary>Remove the row and its named postings.</summary>
     public async Task<MutationResult> DeleteAsync(

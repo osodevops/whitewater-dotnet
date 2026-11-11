@@ -266,10 +266,10 @@ var spec = StateStore.Named("employees")
 var store = await accounts.DefineStateStoreAsync(spec);       // declares accounts.employees on the Nodes
 
 // named-key postings: a typed IStoreKeySet, a builder lambda, or a raw dictionary —
-await store.PutAsync("emp-1"u8.ToArray(), payload, PassportKeySet.With("P123", "eng"));
-await store.PutAsync("emp-1"u8.ToArray(), payload,
+await store.PutAsync("emp-1", payload, PassportKeySet.With("P123", "eng"));
+await store.PutAsync("emp-1", payload,
     new Dictionary<string, object?> { ["passport"] = "P123", ["department"] = "eng" });
-var row = await store.GetAsync("emp-1"u8.ToArray());            // StoreRow | null + freshness
+var row = await store.GetAsync("emp-1");            // StoreRow | null + freshness
 var rows = await store.GetByAsync("passport", "P123");          // named key — a list
 await foreach (var r in store.IterateAsync()) Export(r);
 ```

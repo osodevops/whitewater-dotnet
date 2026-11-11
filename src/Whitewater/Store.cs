@@ -153,10 +153,10 @@ public sealed class Store<TKey, TValue>
     public async Task<Row<TKey, TValue>?> GetAsync(
         TKey key,
         bool strict = false,
-        int? waitMs = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
-        var row = await _store.GetAsync(_keyCodec.Encode(key), strict, waitMs, ct)
+        var row = await _store.GetAsync(_keyCodec.Encode(key), strict, wait, ct)
             .ConfigureAwait(false);
         return row is null ? null : DecodeRow(row);
     }
@@ -168,10 +168,10 @@ public sealed class Store<TKey, TValue>
         object? value,
         int? limit = null,
         bool strict = false,
-        int? waitMs = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
-        var result = await _store.GetByAsync(namedKey, value, limit, strict, waitMs, ct)
+        var result = await _store.GetByAsync(namedKey, value, limit, strict, wait, ct)
             .ConfigureAwait(false);
         return new RowsResult<TKey, TValue>(
             DecodeRows(result.Rows), result.Freshness);
@@ -183,10 +183,10 @@ public sealed class Store<TKey, TValue>
     public async Task<TValue?> FindAsync(
         TKey key,
         bool strict = false,
-        int? waitMs = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
-        var row = await GetAsync(key, strict, waitMs, ct).ConfigureAwait(false);
+        var row = await GetAsync(key, strict, wait, ct).ConfigureAwait(false);
         return row is null ? default : row.Value;
     }
 
@@ -197,10 +197,10 @@ public sealed class Store<TKey, TValue>
         string namedKey,
         object? value,
         bool strict = false,
-        int? waitMs = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
-        var rows = await GetByAsync(namedKey, value, 1, strict, waitMs, ct)
+        var rows = await GetByAsync(namedKey, value, 1, strict, wait, ct)
             .ConfigureAwait(false);
         return rows.Rows.Count == 0 ? default : rows.Rows[0].Value;
     }
@@ -333,17 +333,17 @@ public sealed class Store<TKey, TValue, TKeySet> where TKeySet : IStoreKeySet, n
         CancellationToken ct = default)
         => _store.PutAsync(key, value, named, mutationId, ct);
 
-    public Task<Row<TKey, TValue>?> GetAsync(TKey key, bool strict = false, int? waitMs = null, CancellationToken ct = default)
-        => _store.GetAsync(key, strict, waitMs, ct);
+    public Task<Row<TKey, TValue>?> GetAsync(TKey key, bool strict = false, TimeSpan? wait = null, CancellationToken ct = default)
+        => _store.GetAsync(key, strict, wait, ct);
 
-    public Task<RowsResult<TKey, TValue>> GetByAsync(string namedKey, object? value, int? limit = null, bool strict = false, int? waitMs = null, CancellationToken ct = default)
-        => _store.GetByAsync(namedKey, value, limit, strict, waitMs, ct);
+    public Task<RowsResult<TKey, TValue>> GetByAsync(string namedKey, object? value, int? limit = null, bool strict = false, TimeSpan? wait = null, CancellationToken ct = default)
+        => _store.GetByAsync(namedKey, value, limit, strict, wait, ct);
 
-    public Task<TValue?> FindAsync(TKey key, bool strict = false, int? waitMs = null, CancellationToken ct = default)
-        => _store.FindAsync(key, strict, waitMs, ct);
+    public Task<TValue?> FindAsync(TKey key, bool strict = false, TimeSpan? wait = null, CancellationToken ct = default)
+        => _store.FindAsync(key, strict, wait, ct);
 
-    public Task<TValue?> FindByAsync(string namedKey, object? value, bool strict = false, int? waitMs = null, CancellationToken ct = default)
-        => _store.FindByAsync(namedKey, value, strict, waitMs, ct);
+    public Task<TValue?> FindByAsync(string namedKey, object? value, bool strict = false, TimeSpan? wait = null, CancellationToken ct = default)
+        => _store.FindByAsync(namedKey, value, strict, wait, ct);
 
     public Task<TValue> GetOrDefaultAsync(TKey key, TValue fallback, CancellationToken ct = default)
         => _store.GetOrDefaultAsync(key, fallback, ct);

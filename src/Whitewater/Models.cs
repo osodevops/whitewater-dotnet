@@ -127,8 +127,8 @@ public sealed record TemporaryFetchOptions(
         => new(After: after, Limit: limit);
 
     /// <summary>Long-poll for newly committed records after <paramref name="after"/>.</summary>
-    public static TemporaryFetchOptions Tailed(Cursor? after, int limit, int waitMs)
-        => new(After: after, Limit: limit, Tail: true, WaitMs: waitMs);
+    public static TemporaryFetchOptions Tailed(Cursor? after, int limit, TimeSpan wait)
+        => new(After: after, Limit: limit, Tail: true, WaitMs: (int)wait.TotalMilliseconds);
 
     /// <summary>Position at the current end Cursor without returning records.</summary>
     public static TemporaryFetchOptions AtEnd() => new(NewOnly: true);

@@ -64,7 +64,7 @@ await keyed.PutAsync("emp-1", profile, k => k.WithPassport("P123").WithDepartmen
 await profiles.PutAsync("emp-1", profile, profile.Passport);
 
 // Raw dictionary is still supported for dynamic keys:
-await store.PutAsync(Utf8("user-1"), Utf8("profile-1"),
+await store.PutAsync("user-1", "profile-1"u8.ToArray(),
     new Dictionary<string, object?>
     {
         ["passport"] = "P111",
@@ -74,8 +74,8 @@ await store.PutAsync(Utf8("user-1"), Utf8("profile-1"),
         ["badge"] = new byte[] { 1, 2 },
         ["note"] = null,
     });
-await store.DeleteAsync(Utf8("user-1"));                  // mutationId generated
-await store.DeleteAsync(Utf8("user-1"), stableMutationUuid);
+await store.DeleteAsync("user-1");                      // mutationId generated
+await store.DeleteAsync("user-1", stableMutationUuid);
 ```
 
 - `PutAsync` commits one journaled `put_row` through the store's RF3
@@ -96,7 +96,7 @@ await store.DeleteAsync(Utf8("user-1"), stableMutationUuid);
 ## Reading
 
 ```csharp
-var row = await store.GetAsync(Utf8("user-1"));            // StoreRow | null
+var row = await store.GetAsync("user-1");                // StoreRow | null
 row.Payload;                                               // byte[]
 row.Freshness;              // AppliedSeq / CommittedSeq / Behind / ServedBy
 
@@ -106,7 +106,7 @@ result.Freshness.ServedBy;                // which Node answered
 ```
 
 `GetByAsync` is the group/list lookup: one non-unique named value
-resolves to **every** primary row carrying it. `strict` + `waitMs`
+resolves to **every** primary row carrying it. `strict` + `wait` (`TimeSpan`)
 bounded-waits for the serving replica to apply its committed frontier
 rather than answering stale; non-strict reads still report
 `Freshness.Behind` honestly.
@@ -116,7 +116,7 @@ rather than answering stale; non-strict reads still report
 ```csharp
 await foreach (var row in store.IterateAsync(limit: 256)) Export(row);
 
-var page = await store.PageAsync(afterKey, 256);   // one bounded page
+var page = await store.PageAsync(afterKey, 256);        // one bounded page
 page.NextKey;                                    // continuation, or null
 page.PinnedSeq;                                  // journal position pinned to
 ```

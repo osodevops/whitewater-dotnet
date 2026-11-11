@@ -54,11 +54,11 @@ public class LiveStoreTests
         await store.PutAsync(Utf8("emp-3"), Utf8("cara"),
             new Dictionary<string, object?> { ["passport"] = "P333", ["department"] = "ops" });
 
-        var row = await store.GetAsync(Utf8("emp-1"), strict: true, waitMs: 5000);
+        var row = await store.GetAsync("emp-1", strict: true, wait: TimeSpan.FromMilliseconds(5000));
         Assert.NotNull(row);
         Assert.Equal("alice", Encoding.UTF8.GetString(row.Payload));
 
-        var eng = await store.GetByAsync("department", "eng", strict: true, waitMs: 5000);
+        var eng = await store.GetByAsync("department", "eng", strict: true, wait: TimeSpan.FromMilliseconds(5000));
         Assert.Equal(2, eng.Rows.Count);
         Assert.True(eng.Freshness.AppliedSeq > 0);
 
@@ -70,9 +70,9 @@ public class LiveStoreTests
         Assert.Equal(new SortedSet<string>(new[] { "emp-1", "emp-2", "emp-3" }), keys);
 
         await store.DeleteAsync(Utf8("emp-1"));
-        Assert.Null(await store.GetAsync(Utf8("emp-1"), strict: true, waitMs: 5000));
+        Assert.Null(await store.GetAsync("emp-1", strict: true, wait: TimeSpan.FromMilliseconds(5000)));
         Assert.Single((await store.GetByAsync(
-            "department", "eng", strict: true, waitMs: 5000)).Rows);
+            "department", "eng", strict: true, wait: TimeSpan.FromMilliseconds(5000))).Rows);
 
         await store.ClearAsync();
         Assert.Empty((await store.PageAsync()).Rows);

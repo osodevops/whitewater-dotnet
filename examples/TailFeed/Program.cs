@@ -29,9 +29,9 @@ Cursor? after = null; // null -> feed tail position
 
 while (true)
 {
-    // Blocks up to WaitMs server-side; returns early when records land.
+    // Blocks up to the wait budget server-side; returns early when records land.
     var page = await tail.FetchAsync(
-        TemporaryFetchOptions.Tailed(after, 50, 2500));
+        TemporaryFetchOptions.Tailed(after, 50, TimeSpan.FromMilliseconds(2500)));
 
     foreach (var record in page.Records)
     {
